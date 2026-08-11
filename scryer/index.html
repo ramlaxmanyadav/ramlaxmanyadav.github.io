@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scryer — Ruby &amp; Rails Code Security Auditor</title>
+<meta name="description" content="Scryer is a Ruby/Rails security &amp; quality auditor — one command instead of Brakeman + bundler-audit + Reek + custom scripts.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  h1 { font-size: 1.9rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  .badges { margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .badges a { text-decoration: none; }
+  .badge {
+    display: inline-block; font-size: 0.78rem; font-weight: 600; padding: 0.3rem 0.7rem;
+    border-radius: 999px; background: #eef2ff; color: #3730a3; border: 1px solid #e0e7ff;
+  }
+  h2 { font-size: 1.15rem; margin-top: 2.5rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a {
+    color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem;
+  }
+  .links a:hover { text-decoration: underline; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  td:not(:first-child) { text-align: center; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Scryer</h1>
+    <p class="tagline">Ruby &amp; Rails Code Security Auditor — one audit command instead of
+      RuboCop + Brakeman + bundler-audit + Reek + custom scripts.</p>
+    <div class="badges">
+      <a href="https://rubygems.org/gems/scryer"><span class="badge">gem install scryer</span></a>
+      <a href="https://github.com/ramlaxmanyadav/scryer"><span class="badge">MIT licensed</span></a>
+      <a href="https://github.com/ramlaxmanyadav/scryer"><span class="badge">zero runtime deps</span></a>
+    </div>
+  </header>
+
+  <p>
+    Scryer scans Ruby and Rails source for security vulnerabilities, performance problems,
+    duplicate/smelly code, and dependency vulnerabilities — in one scan, with one report. Built on
+    Ruby's own stdlib <code>Ripper</code> parser, so the static scan needs no Rails or Bundler to
+    run at all.
+  </p>
+
+  <pre><code>gem install scryer
+scryer</code></pre>
+
+  <pre><code>Scryer Audit — 236 files scanned
+────────────────────────────────
+
+Security                8 findings
+Performance            10 findings
+Code Quality          248 findings
+Dependencies           24 findings
+────────────────────────────────
+Total                 290 findings
+
+JSON report: tmp/scryer_report.json
+HTML report: tmp/scryer_report.html</code></pre>
+
+  <p>That's real output from a scan of a live 236-file Rails app, not a mockup.</p>
+
+  <h2>What it detects</h2>
+  <ul>
+    <li><strong>Security</strong> — SQL injection, mass assignment, command injection, hardcoded
+      secrets, unsafe deserialization, XSS-prone HTML, CSRF gaps, weak crypto, open redirects.</li>
+    <li><strong>Performance</strong> — N+1 queries, missing pagination, inefficient per-record
+      saves, unbounded full-table iteration.</li>
+    <li><strong>Code quality</strong> — near-duplicate code across methods (token-normalized
+      similarity), plus one narrow style check: a missing <code>frozen_string_literal</code>
+      magic comment.</li>
+    <li><strong>Dependencies</strong> — known-vulnerable gem versions (live OSV.dev query) and
+      insecure Gemfile.lock sources, on by default.</li>
+    <li><strong>Runtime</strong> — an opt-in ActiveRecord query watcher for N+1s and unused eager
+      loading as they actually happen.</li>
+  </ul>
+
+  <h2>How it compares</h2>
+  <table>
+    <tr><th>Capability</th><th>Scryer</th><th>RuboCop</th><th>Brakeman</th><th>bundler-audit</th></tr>
+    <tr><td>Style/lint conventions</td><td>Partial*</td><td>✅</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Rails security scanning</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+    <tr><td>Performance heuristics</td><td>✅</td><td>Partial</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Duplicate code detection</td><td>✅</td><td>Partial</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Dependency vulnerabilities</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td></tr>
+    <tr><td>Runtime query analysis</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Single command, all of the above</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+  </table>
+  <p>* One narrow check only (a missing <code>frozen_string_literal</code> magic comment) —
+    everything else in RuboCop's domain is intentionally out of scope. Full breakdown with
+    footnotes in the
+    <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/README.md#scryer-vs-rubocop-vs-brakeman-vs-bundler-audit">README</a>.</p>
+
+  <h2>Links</h2>
+  <div class="links">
+    <a href="https://github.com/ramlaxmanyadav/scryer">GitHub repo</a>
+    <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/README.md">Full README</a>
+    <a href="https://rubygems.org/gems/scryer">RubyGems</a>
+    <a href="./llms.txt">llms.txt</a>
+  </div>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/scryer">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>
