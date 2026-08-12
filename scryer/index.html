@@ -73,12 +73,12 @@ scryer</code></pre>
   <pre><code>Scryer Audit — 236 files scanned
 ────────────────────────────────
 
-Security                8 findings
+Security               13 findings
 Performance            10 findings
 Code Quality          248 findings
 Dependencies           24 findings
 ────────────────────────────────
-Total                 290 findings
+Total                 295 findings
 
 JSON report: tmp/scryer_report.json
 HTML report: tmp/scryer_report.html</code></pre>
@@ -87,33 +87,48 @@ HTML report: tmp/scryer_report.html</code></pre>
 
   <h2>What it detects</h2>
   <ul>
-    <li><strong>Security</strong> — SQL injection, mass assignment, command injection, hardcoded
-      secrets, unsafe deserialization, XSS-prone HTML, CSRF gaps, weak crypto, open redirects.</li>
+    <li><strong>Security</strong> — 26 rules: SQL injection, mass assignment, command injection,
+      hardcoded secrets (including a hardcoded <code>secret_key_base</code>), unsafe
+      deserialization, XSS-prone HTML, CSRF gaps, weak crypto, open redirects, SSRF, path
+      traversal, IDOR (least precise check in the gem — see comparison table), authentication
+      filters explicitly skipped, Rails security configuration (HTTPS enforcement, session
+      cookie flags, cookie serializer, default security headers, Action Cable forgery
+      protection), Active Storage content-type/disposition checks, CORS misconfiguration,
+      insecure JWT usage, background jobs passed raw <code>params</code>, and GraphQL schemas
+      missing query depth/complexity limits.</li>
     <li><strong>Performance</strong> — N+1 queries, missing pagination, inefficient per-record
       saves, unbounded full-table iteration.</li>
     <li><strong>Code quality</strong> — near-duplicate code across methods (token-normalized
       similarity), plus one narrow style check: a missing <code>frozen_string_literal</code>
       magic comment.</li>
-    <li><strong>Dependencies</strong> — known-vulnerable gem versions (live OSV.dev query) and
-      insecure Gemfile.lock sources, on by default.</li>
+    <li><strong>Dependencies</strong> — known-vulnerable gem versions (live OSV.dev query),
+      insecure Gemfile.lock sources, Ruby version end-of-life, and a committed/un-gitignored
+      <code>config/master.key</code> — all on by default.</li>
     <li><strong>Runtime</strong> — an opt-in ActiveRecord query watcher for N+1s and unused eager
       loading as they actually happen.</li>
   </ul>
+  <p>Reports: JSON, self-contained HTML, CSV, and SARIF 2.1.0 — SARIF feeds GitHub Code Scanning
+    and similar CI dashboards directly for inline PR annotations.</p>
 
   <h2>How it compares</h2>
   <table>
     <tr><th>Capability</th><th>Scryer</th><th>RuboCop</th><th>Brakeman</th><th>bundler-audit</th></tr>
     <tr><td>Style/lint conventions</td><td>Partial*</td><td>✅</td><td>❌</td><td>❌</td></tr>
-    <tr><td>Rails security scanning</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+    <tr><td>Rails security scanning</td><td>✅†</td><td>❌</td><td>✅</td><td>❌</td></tr>
     <tr><td>Performance heuristics</td><td>✅</td><td>Partial</td><td>❌</td><td>❌</td></tr>
     <tr><td>Duplicate code detection</td><td>✅</td><td>Partial</td><td>❌</td><td>❌</td></tr>
     <tr><td>Dependency vulnerabilities</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td></tr>
     <tr><td>Runtime query analysis</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>SARIF report (GitHub Code Scanning)</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
     <tr><td>Single command, all of the above</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
   </table>
   <p>* One narrow check only (a missing <code>frozen_string_literal</code> magic comment) —
-    everything else in RuboCop's domain is intentionally out of scope. Full breakdown with
-    footnotes in the
+    everything else in RuboCop's domain is intentionally out of scope.<br>
+    † Heuristic pattern-matching, not taint/data-flow analysis — Brakeman traces whether user
+    input can actually reach a sink; Scryer checks whether a dangerous call shape and a
+    <code>params</code> reference appear together. Real precision gap on the harder checks,
+    <code>idor</code> especially — every finding says "review this," never "this is definitely a
+    bug." Full breakdown with footnotes in the
     <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/README.md#scryer-vs-rubocop-vs-brakeman-vs-bundler-audit">README</a>.</p>
 
   <h2>Links</h2>
