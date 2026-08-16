@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>What Is a Rails Security Scanner? — Scryer (Ruby on Rails Security Auditor)</title>
+<meta name="description" content="What a Rails security scanner actually checks, how SAST for Rails differs from a runtime pen test, and where Scryer fits among Brakeman, RuboCop, and bundler-audit.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Scryer</a></p>
+    <h1>What Is a Rails Security Scanner?</h1>
+    <p class="tagline">Static application security testing (SAST) for Ruby on Rails, explained —
+      what it checks, how it differs from a pen test, and where a given tool sits on the
+      precision/coverage tradeoff.</p>
+  </header>
+
+  <p>
+    A <strong>Rails security scanner</strong> is a program that reads your application's source
+    code and flags patterns known to cause vulnerabilities — without running the app, without a
+    database, and without anyone attacking it. That's the category name for what's more formally
+    called <strong>SAST for Rails</strong> ("static application security testing," applied to Ruby
+    on Rails specifically): the analysis happens on source text/syntax, statically, before
+    deployment — as opposed to DAST (dynamic testing against a running app) or a manual pen test
+    (a human actively trying to break in). All three answer a different question; a mature security
+    program usually uses more than one.
+  </p>
+
+  <h2>What a Rails vulnerability scanner actually looks for</h2>
+  <p>
+    Concretely, a Rails-aware scanner walks your controllers, models, views, and config files
+    looking for specific dangerous shapes — the kind of Ruby security audit a human reviewer would
+    do by hand, automated and run on every commit instead of once a quarter:
+  </p>
+  <ul>
+    <li><strong>Injection</strong> — SQL built via string interpolation instead of bind parameters
+      (<code>where("name = '#{params[:name]}'")</code>), command injection via <code>system</code>/
+      backticks with unsanitized input, unsafe deserialization (<code>Marshal.load</code> on
+      untrusted data).</li>
+    <li><strong>Access control</strong> — mass assignment (<code>Model.new(params[:model])</code>
+      with no <code>.permit</code>), missing authorization checks on write actions, IDOR (an ID from
+      <code>params</code> reaching <code>Model.find</code> with no ownership check).</li>
+    <li><strong>Configuration</strong> — HTTPS enforcement disabled, session cookies missing the
+      <code>secure</code> flag, the Marshal cookie serializer (a known RCE vector), CORS wildcard
+      origins combined with credentials, disabled default security headers.</li>
+    <li><strong>Secrets and crypto</strong> — hardcoded credentials/API keys/<code>secret_key_base</code>,
+      weak hashing (MD5/SHA1 for anything security-sensitive), insecure JWT usage (signature
+      verification disabled, <code>alg: none</code>).</li>
+    <li><strong>Output handling</strong> — XSS-prone unescaped HTML output, open redirects built
+      from unvalidated <code>params</code>.</li>
+  </ul>
+
+  <h2>Two different engineering approaches, same category</h2>
+  <p>
+    Every Rails security scanner has to pick a point on a real tradeoff, and it's worth knowing
+    which side a given tool is on before you trust its output:
+  </p>
+  <ul>
+    <li><strong>Taint/data-flow analysis</strong> — traces whether a specific value can actually
+      flow from an untrusted source (a request parameter) to a dangerous sink (a SQL query, a shell
+      command), across method calls and files. Higher precision, fewer false positives, but slower
+      to build and run, and it needs a real understanding of the framework's call graph. This is
+      what Brakeman does.</li>
+    <li><strong>Heuristic pattern matching</strong> — checks whether a dangerous call shape and a
+      <code>params</code> reference merely appear <em>together</em>, without tracing whether the
+      value actually reaches the sink through that path. Faster, needs no framework boot or call
+      graph, but a real precision gap on the harder checks — every finding is "review this," not "this
+      is definitely exploitable." This is what Scryer does; see <a
+      href="./taint-analysis-vs-heuristic-pattern-matching.html">Taint analysis vs. heuristic
+      pattern matching</a> for the honest tradeoff in detail.</li>
+  </ul>
+  <p>
+    Neither approach is strictly better — a data-flow scanner is more trustworthy per-finding but
+    typically only covers security; a heuristic scanner can run fast enough, and cheaply enough, to
+    also cover performance and dependency risk in the same pass and rank all of it together, which
+    is Scryer's actual differentiator (see <a href="./index.html">the front page</a>).
+  </p>
+
+  <h2>Where Scryer sits</h2>
+  <p>
+    Scryer is a heuristic Rails security scanner and static analysis tool, with the honest scope
+    that implies: <strong>31 security rules</strong> covering the categories above, each tagged with
+    a CWE ID, an OWASP Top 10 (2021) category, and a confidence level — plus performance heuristics
+    (N+1 queries, missing pagination), a live dependency audit against <a
+    href="https://osv.dev">OSV.dev</a>, and duplicate-code detection, all ranked together by
+    severity so a scan ends with one answer to "what's most worth fixing first." It uses Ruby's
+    stdlib <code>Ripper</code> parser directly — no Rails boot, no database, zero runtime
+    dependencies beyond Ruby itself.
+  </p>
+
+  <pre><code>gem install scryer
+scryer</code></pre>
+
+  <table>
+    <tr><th>Capability</th><th>Scryer</th><th>RuboCop</th><th>Brakeman</th><th>bundler-audit</th></tr>
+    <tr><td>Rails security scanning (SAST)</td><td>✅ heuristic</td><td>❌</td><td>✅ taint/data-flow</td><td>❌</td></tr>
+    <tr><td>Dependency security</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td></tr>
+    <tr><td>Performance heuristics</td><td>✅</td><td>Partial</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Style/lint conventions</td><td>Partial</td><td>✅</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Cross-category severity ranking</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+  </table>
+  <p>Full breakdown with footnotes in the <a
+    href="https://github.com/ramlaxmanyadav/scryer/blob/main/docs/architecture.md#scryer-vs-rubocop-vs-brakeman-vs-bundler-audit">README</a>.</p>
+
+  <h2>Further reading</h2>
+  <div class="links">
+    <a href="./taint-analysis-vs-heuristic-pattern-matching.html">Taint analysis vs. heuristics</a>
+    <a href="./dependency-security.html">Dependency security for Rails</a>
+    <a href="./security-code-review-checklist.html">Security code review checklist</a>
+    <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/README.md">Full README</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Scryer</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/scryer">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>
