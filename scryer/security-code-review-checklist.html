@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Security Code Review Checklist for Rails — Scryer (Ruby on Rails Security Auditor)</title>
+<meta name="description" content="A concrete, usable security code review checklist for Ruby on Rails pull requests — what to look for in controllers, models, and config, and which parts a static analyzer can check for you.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li { padding-left: 1.6rem; position: relative; margin: 0.55rem 0; }
+  .checklist li::before {
+    content: "☐"; position: absolute; left: 0; color: #64748b; font-size: 1.05rem;
+  }
+  .tag {
+    display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 0.1rem 0.5rem;
+    border-radius: 999px; background: #eef2ff; color: #3730a3; margin-left: 0.4rem;
+  }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Scryer</a></p>
+    <h1>Security Code Review Checklist for Rails</h1>
+    <p class="tagline">A concrete checklist for reviewing a Rails pull request — not generic
+      advice. Items tagged <span class="tag">automatable</span> are exactly what a static
+      analyzer like Scryer checks on every commit; the rest still need a human's judgment.</p>
+  </header>
+
+  <p>
+    Security code review scales badly as "remember all the OWASP categories" — reviewers are busy,
+    context-switch between PRs, and the same handful of mistakes recur regardless of who's
+    reviewing. A checklist scoped to what actually shows up in Rails PRs, split by what a tool can
+    catch versus what still needs a human, is more useful in practice than a general reference.
+  </p>
+
+  <h2>Input handling</h2>
+  <ul class="checklist">
+    <li>Every SQL query built with a variable uses <code>?</code>/named bind parameters or the
+      hash form, never string interpolation into the query text. <span class="tag">automatable</span></li>
+    <li>No <code>system</code>/backticks/<code>%x{}</code> call includes a request-derived value
+      without an explicit allowlist. <span class="tag">automatable</span></li>
+    <li>No <code>Marshal.load</code>/<code>YAML.unsafe_load</code>/<code>eval</code> runs on data
+      that ever originates from a request, cookie, or user-editable field. <span class="tag">automatable</span></li>
+    <li>Any URL/path built from <code>params</code> that reaches <code>Net::HTTP</code>,
+      <code>URI.open</code>, <code>File.read</code>/<code>File.join</code>, or <code>send_file</code>
+      is validated against an allowlist first (SSRF/path traversal). <span class="tag">automatable</span></li>
+    <li>Redirect targets built from <code>params</code> are validated against an allowlist, not
+      passed to <code>redirect_to</code> raw (open redirect). <span class="tag">automatable</span></li>
+  </ul>
+
+  <h2>Access control</h2>
+  <ul class="checklist">
+    <li><code>Model.new</code>/<code>update</code> never receives raw <code>params</code> or
+      <code>params[:model]</code> directly — always through a strong-parameters method with an
+      explicit <code>.permit</code> list. <span class="tag">automatable</span></li>
+    <li>Every write action (<code>create</code>/<code>update</code>/<code>destroy</code>) has a
+      visible authorization check somewhere in the controller — but does it check the <em>right</em>
+      thing for <em>this specific</em> record? That still needs a human. <span class="tag">partially automatable</span></li>
+    <li>Every <code>Model.find(params[:id])</code>-shaped lookup either scopes to the current
+      user/tenant, or is behind a class-level authorization filter the reviewer has actually
+      confirmed applies to this action (IDOR — the single hardest check to fully automate; a
+      static tool can flag the shape but not confirm the class-level guard actually covers it in
+      every case). <span class="tag">partially automatable</span></li>
+    <li>No <code>skip_before_action</code> silently disables a known authentication filter without
+      a comment explaining why. <span class="tag">automatable</span></li>
+  </ul>
+
+  <h2>Configuration</h2>
+  <ul class="checklist">
+    <li><code>config.force_ssl</code> isn't set to <code>false</code> in any environment that
+      serves real traffic. <span class="tag">automatable</span></li>
+    <li>Session cookies set <code>secure: true</code> (at least in production);
+      <code>cookies_serializer</code> is <code>:json</code>, never <code>:marshal</code>. <span class="tag">automatable</span></li>
+    <li>Default security headers (<code>X-Frame-Options</code>, <code>X-Content-Type-Options</code>)
+      aren't explicitly disabled without a documented reason. <span class="tag">automatable</span></li>
+    <li>CORS config never combines a wildcard origin with <code>credentials: true</code>. <span class="tag">automatable</span></li>
+    <li><code>config.hosts.clear</code> isn't present in production (disables the Host-header
+      allowlist). <span class="tag">automatable</span></li>
+  </ul>
+
+  <h2>Secrets and crypto</h2>
+  <ul class="checklist">
+    <li>No API key, password, or <code>secret_key_base</code> is a string literal anywhere in the
+      diff — including test fixtures that might get copy-pasted into real config later. <span class="tag">automatable</span></li>
+    <li>Anything that needs to be irreversible (passwords) uses <code>bcrypt</code>/<code>Devise</code>,
+      never MD5/SHA1 alone. <span class="tag">automatable</span></li>
+    <li><code>JWT.decode</code> calls verify the signature — never <code>verify: false</code> or
+      <code>algorithm: 'none'</code>. <span class="tag">automatable</span></li>
+    <li><code>config/master.key</code> isn't committed to the repo (check <code>.gitignore</code>
+      covers it, not just that this specific commit doesn't add it). <span class="tag">automatable</span></li>
+  </ul>
+
+  <h2>The parts that stay human</h2>
+  <p>
+    Everything tagged <span class="tag">automatable</span> above is a pattern a static analyzer can
+    reliably flag — <a href="./rails-security-scanner.html">that's what a Rails security
+    scanner is for</a>, and it's worth running on every commit rather than re-deriving this list by
+    eye each time. What's genuinely left for a human reviewer: whether the *business logic* around
+    an authorization check is actually correct for this specific feature (not just "a check
+    exists"), whether a new third-party integration's trust boundary is reasonable, and whether a
+    "this is fine because X" comment justifying a flagged pattern is actually true. A tool narrows
+    down where to spend that judgment; it doesn't replace it — see <a
+    href="./taint-analysis-vs-heuristic-pattern-matching.html">why even the more precise
+    approaches still say "review this," not "confirmed"</a>.
+  </p>
+
+  <h2>Running the automatable half</h2>
+  <pre><code>gem install scryer
+scryer</code></pre>
+  <p>
+    Every automatable item above maps to one of Scryer's 31 security rules, each with a CWE ID, an
+    OWASP category, and a confidence level — see <a
+    href="https://github.com/ramlaxmanyadav/scryer/blob/main/docs/rules.md#what-scryer-detects">What
+    Scryer detects</a> for the full rule list, and <a
+    href="https://github.com/ramlaxmanyadav/scryer/blob/main/docs/usage.md#cicd-integration">CI/CD
+    integration</a> to wire it into pull-request review directly (SARIF → GitHub Code Scanning
+    inline annotations).
+  </p>
+
+  <h2>Further reading</h2>
+  <div class="links">
+    <a href="./rails-security-scanner.html">What is a Rails security scanner?</a>
+    <a href="./taint-analysis-vs-heuristic-pattern-matching.html">Taint analysis vs. heuristics</a>
+    <a href="./dependency-security.html">Dependency security for Rails</a>
+    <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/README.md">Full README</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Scryer</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/scryer">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

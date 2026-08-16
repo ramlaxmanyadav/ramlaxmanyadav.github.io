@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Scryer — Ruby &amp; Rails Code Security Auditor</title>
-<meta name="description" content="Scryer is a Ruby/Rails security &amp; quality auditor — one command instead of Brakeman + bundler-audit + Reek + custom scripts.">
+<title>Scryer — Ruby on Rails Security Auditor</title>
+<meta name="description" content="Scryer is an all-in-one security auditing and static analysis tool for Ruby on Rails applications — tells you what to fix first, across security, performance, dependencies, and code quality.">
 <link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -50,9 +51,10 @@
 <div class="wrap">
 
   <header>
-    <h1>Scryer</h1>
-    <p class="tagline">Ruby &amp; Rails Code Security Auditor — one audit command instead of
-      RuboCop + Brakeman + bundler-audit + Reek + custom scripts.</p>
+    <h1>Scryer — Ruby on Rails Security Auditor</h1>
+    <p class="tagline">An all-in-one security auditing and static analysis tool for Ruby on Rails
+      applications — tells you what to fix first, across security, performance, dependencies, and
+      code quality.</p>
     <div class="badges">
       <a href="https://rubygems.org/gems/scryer"><span class="badge">gem install scryer</span></a>
       <a href="https://github.com/ramlaxmanyadav/scryer"><span class="badge">MIT licensed</span></a>
@@ -62,9 +64,10 @@
 
   <p>
     Scryer scans Ruby and Rails source for security vulnerabilities, performance problems,
-    duplicate/smelly code, and dependency vulnerabilities — in one scan, with one report. Built on
-    Ruby's own stdlib <code>Ripper</code> parser, so the static scan needs no Rails or Bundler to
-    run at all.
+    dependency risk, and code-quality issues, then ranks everything it finds by severity
+    <em>across</em> those categories — so a scan ends with one answer to "what's most worth fixing
+    first," not four separate tool outputs to reconcile by hand. Built on Ruby's own stdlib
+    <code>Ripper</code> parser, so the static scan needs no Rails or Bundler to run at all.
   </p>
 
   <pre><code>gem install scryer
@@ -73,48 +76,113 @@ scryer</code></pre>
   <pre><code>Scryer Audit — 236 files scanned
 ────────────────────────────────
 
-Security                8 findings
+Security Score: 10/100 (F)
+Checks: 23/36 rules clean (63.9%)
+
+Security               27 findings
 Performance            10 findings
 Code Quality          248 findings
 Dependencies           24 findings
 ────────────────────────────────
-Total                 290 findings
+Total                 309 findings
+
+Top priorities:
+  1. [critical] security — mass_assignment (app/helpers/api/v1/create_order_helper.rb:14)
+  2. [critical] security — mass_assignment (app/helpers/api/v1/create_order_helper.rb:45)
+  3. [critical] security — mass_assignment (app/helpers/api/v1/checkout/checkout_helper.rb:92)
+  4. [critical] security — sql_injection (app/controllers/concerns/billing_helper.rb:12)
+  5. [critical] security — mass_assignment (app/controllers/api/v1/orders_controller.rb:8)
 
 JSON report: tmp/scryer_report.json
 HTML report: tmp/scryer_report.html</code></pre>
 
-  <p>That's real output from a scan of a live 236-file Rails app, not a mockup.</p>
+  <p>That's real output from a scan of a live 236-file Rails app ("acme-app" here — file/controller
+    names anonymized since we don't publish that app's source; counts, severities, and line
+    numbers are exactly as scanned), not a mockup — the harsh grade included. "Top priorities" is
+    the same severity ranking applied across <em>all</em> categories, not just within each one;
+    it's the first thing in the Findings section of the HTML report, which also leads with a
+    security score badge and severity chart.</p>
 
   <h2>What it detects</h2>
   <ul>
-    <li><strong>Security</strong> — SQL injection, mass assignment, command injection, hardcoded
-      secrets, unsafe deserialization, XSS-prone HTML, CSRF gaps, weak crypto, open redirects.</li>
+    <li><strong>Security</strong> — 31 rules: SQL injection, mass assignment, command injection,
+      hardcoded secrets (including a hardcoded <code>secret_key_base</code>), unsafe
+      deserialization, XSS-prone HTML, CSRF gaps, weak crypto, open redirects, SSRF, path
+      traversal, IDOR (least precise check in the gem — see comparison table), missing
+      authorization/policy scoping, authentication filters explicitly skipped, Rails security
+      configuration (HTTPS enforcement, session cookie flags, cookie serializer, default security
+      headers, Action Cable forgery protection, production-only config audit), Active Storage
+      content-type/disposition checks, CORS misconfiguration, insecure JWT usage, background jobs
+      passed raw <code>params</code>, and GraphQL schemas missing query depth/complexity limits.
+      Every finding also carries a CWE ID, an OWASP Top 10 (2021) category, and a confidence level
+      (own best-effort tagging, not OWASP-audited), rolled up into an OWASP coverage scorecard.
+      Fixes can be AI-rewritten and automatically re-scanned to confirm they actually work
+      (<code>scryer verify</code>).</li>
     <li><strong>Performance</strong> — N+1 queries, missing pagination, inefficient per-record
       saves, unbounded full-table iteration.</li>
     <li><strong>Code quality</strong> — near-duplicate code across methods (token-normalized
       similarity), plus one narrow style check: a missing <code>frozen_string_literal</code>
       magic comment.</li>
-    <li><strong>Dependencies</strong> — known-vulnerable gem versions (live OSV.dev query) and
-      insecure Gemfile.lock sources, on by default.</li>
+    <li><strong>Dependencies</strong> — known-vulnerable gem versions (live OSV.dev query),
+      insecure Gemfile.lock sources, Ruby version end-of-life, and a committed/un-gitignored
+      <code>config/master.key</code> — all on by default.</li>
     <li><strong>Runtime</strong> — an opt-in ActiveRecord query watcher for N+1s and unused eager
       loading as they actually happen.</li>
   </ul>
+  <p>Reports: JSON, self-contained HTML, CSV, and SARIF 2.1.0 — SARIF feeds GitHub Code Scanning
+    and similar CI dashboards directly for inline PR annotations, tagged with CWE and a
+    combined severity+confidence rank. A bundled
+    <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/action.yml">GitHub Action</a>
+    wraps install + scan + SARIF upload in one step.</p>
 
   <h2>How it compares</h2>
+  <p>
+    Brakeman is the deeper, more mature tool for the security categories it's spent years on —
+    real taint/data-flow analysis, not heuristic pattern-matching (see †). RuboCop owns
+    style/lint conventions. Scryer isn't trying to out-analyze either at their own specialty —
+    it looks at security, performance, dependency, and code-quality findings together and ranks
+    the result, which is a different question than any one of these tools is built to answer.
+  </p>
   <table>
     <tr><th>Capability</th><th>Scryer</th><th>RuboCop</th><th>Brakeman</th><th>bundler-audit</th></tr>
     <tr><td>Style/lint conventions</td><td>Partial*</td><td>✅</td><td>❌</td><td>❌</td></tr>
-    <tr><td>Rails security scanning</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+    <tr><td>Rails security scanning</td><td>✅†</td><td>❌</td><td>✅</td><td>❌</td></tr>
     <tr><td>Performance heuristics</td><td>✅</td><td>Partial</td><td>❌</td><td>❌</td></tr>
     <tr><td>Duplicate code detection</td><td>✅</td><td>Partial</td><td>❌</td><td>❌</td></tr>
     <tr><td>Dependency vulnerabilities</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td></tr>
     <tr><td>Runtime query analysis</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>SARIF report (GitHub Code Scanning)</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+    <tr><td>Cross-category risk ranking ("fix this first")</td><td>✅‡</td><td>❌</td><td>❌</td><td>❌</td></tr>
     <tr><td>Single command, all of the above</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
   </table>
   <p>* One narrow check only (a missing <code>frozen_string_literal</code> magic comment) —
-    everything else in RuboCop's domain is intentionally out of scope. Full breakdown with
+    everything else in RuboCop's domain is intentionally out of scope.<br>
+    † Heuristic pattern-matching, not taint/data-flow analysis — Brakeman traces whether user
+    input can actually reach a sink; Scryer checks whether a dangerous call shape and a
+    <code>params</code> reference appear together. Real precision gap on the harder checks,
+    <code>idor</code> especially — every finding says "review this," never "this is definitely a
+    bug."<br>
+    ‡ Each tool ranks findings within its own domain at best (e.g. Brakeman's confidence levels).
+    None of them combine security, performance, dependency, and code-quality findings into one
+    ranked list — that's what Scryer's "Top priorities" (shown above) does. Full breakdown with
     footnotes in the
-    <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/README.md#scryer-vs-rubocop-vs-brakeman-vs-bundler-audit">README</a>.</p>
+    <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/docs/architecture.md#scryer-vs-rubocop-vs-brakeman-vs-bundler-audit">README</a>.</p>
+
+  <h2>Guides</h2>
+  <ul>
+    <li><a href="./rails-security-scanner.html">What is a Rails security scanner?</a> — SAST for
+      Rails explained, what a scanner actually checks, and where Scryer sits among Brakeman,
+      RuboCop, and bundler-audit.</li>
+    <li><a href="./taint-analysis-vs-heuristic-pattern-matching.html">Taint analysis vs. heuristic
+      pattern matching</a> — the honest engineering tradeoff behind Scryer's approach, with real
+      Ruby examples of where each one is right and wrong.</li>
+    <li><a href="./dependency-security.html">Dependency security for Rails applications</a> — what
+      a <code>Gemfile.lock</code> audit actually needs to check, and why Scryer queries OSV.dev
+      live instead of shipping a bundled advisory database.</li>
+    <li><a href="./security-code-review-checklist.html">Security code review checklist for
+      Rails</a> — a concrete, usable PR checklist, split by what a static analyzer can catch versus
+      what still needs a human.</li>
+  </ul>
 
   <h2>Links</h2>
   <div class="links">
@@ -122,6 +190,7 @@ HTML report: tmp/scryer_report.html</code></pre>
     <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/README.md">Full README</a>
     <a href="https://rubygems.org/gems/scryer">RubyGems</a>
     <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
   </div>
 
   <footer>

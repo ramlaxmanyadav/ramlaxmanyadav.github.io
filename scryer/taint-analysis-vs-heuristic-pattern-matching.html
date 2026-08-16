@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Taint Analysis vs. Heuristic Pattern Matching — Scryer (Ruby on Rails Security Auditor)</title>
+<meta name="description" content="What data-flow/taint analysis actually does differently from heuristic pattern matching in Rails security tools, with real examples of where each one is right and wrong.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .callout {
+    background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Scryer</a></p>
+    <h1>Taint Analysis vs. Heuristic Pattern Matching</h1>
+    <p class="tagline">The real difference between the two engineering approaches Rails security
+      tools use, with concrete Ruby examples of where each gets it right and where each gets it
+      wrong.</p>
+  </header>
+
+  <div class="callout">
+    <strong>Honesty check first:</strong> Scryer does <em>not</em> do taint/data-flow analysis. It
+    does heuristic pattern matching. This page explains what that distinction means in practice —
+    it's a comparison, not a claim that Scryer is something it isn't. If you need the highest
+    precision Rails security analysis available today, that's <a
+    href="https://brakemanscanner.org/">Brakeman</a>, not Scryer — see <a
+    href="./rails-security-scanner.html">where Scryer fits instead</a>.
+  </div>
+
+  <h2>What taint analysis actually does</h2>
+  <p>
+    Taint/data-flow analysis tracks a value's origin and asks whether it can reach a dangerous
+    operation through the actual paths the program executes. Concretely, for Rails: it marks
+    <code>params</code> (and anything derived from cookies, headers, or the database) as
+    "tainted," then traces that taint through assignments, method calls, and even across files —
+    does this tainted value eventually arrive, unsanitized, at a SQL query, a shell command, an
+    <code>eval</code>, a redirect? If a sanitizing step (an escape, a whitelist check, a type
+    coercion) sits on that path, the taint is cleared and no finding fires.
+  </p>
+  <p>
+    This is what makes it precise: a data-flow tool can tell the difference between these two,
+    even though they look almost identical at the call site:
+  </p>
+  <pre><code># NOT flagged by a taint analyzer — the value is sanitized before it arrives
+status = params[:status].to_s
+raise ArgumentError unless %w[open closed].include?(status)
+Order.where("status = ?", status)  # already parameterized AND validated
+
+# Flagged — tainted value reaches the sink with no sanitization on this path
+Order.where("status = '#{params[:status]}'")</code></pre>
+  <p>
+    Building this requires understanding Rails' actual call graph (which methods call which,
+    across files, including framework internals like <code>before_action</code> filters) — real
+    engineering investment, which is exactly why Brakeman, built specifically for this, is more
+    mature at it than any general-purpose heuristic scanner will be.
+  </p>
+
+  <h2>What heuristic pattern matching does instead</h2>
+  <p>
+    A heuristic scanner skips the call-graph tracing entirely and asks a narrower, syntactic
+    question: <em>does a dangerous-shaped call and a reference to untrusted input appear together
+    in the same expression?</em> Scryer's <code>sql_injection</code> rule, concretely: walk the
+    parsed syntax tree for a call to <code>where</code>/<code>find_by</code>/<code>order</code>/etc.
+    whose first argument is a string literal containing <code>#{...}</code> interpolation. No
+    tracing of where the interpolated value came from — just "this shape, right here, is risky."
+  </p>
+  <p>
+    The tradeoff is exactly what you'd expect: faster (no call-graph construction, no framework
+    boot), simpler to build and audit, but it can't tell sanitized-and-safe apart from
+    tainted-and-dangerous when they don't differ syntactically:
+  </p>
+  <pre><code># Flagged by both approaches — genuinely risky
+User.where("name = '#{params[:name]}'")
+
+# Flagged by heuristic pattern matching, but a taint analyzer would clear it —
+# the value never actually reaches user input
+ALLOWED_STATUSES = %w[open closed]
+Order.where("status = '#{ALLOWED_STATUSES.sample}'")</code></pre>
+  <p>
+    That second example is exactly why every Scryer finding says "review this," never "this is
+    definitely a bug" — and why <code>idor</code>, the check with the least reliable signal in the
+    gem (an ID from <code>params</code> reaching <code>Model.find</code>, without being able to
+    trace whether a class-level <code>before_action</code> elsewhere already gates it), carries
+    that caveat most heavily. See <a
+    href="https://github.com/ramlaxmanyadav/scryer/blob/main/docs/architecture.md#scryer-vs-rubocop-vs-brakeman-vs-bundler-audit">the
+    full comparison footnotes</a> for the specific precision gap on each harder check.
+  </p>
+
+  <h2>Insecure Rails patterns a heuristic scanner is well-suited to catch</h2>
+  <p>
+    The precision gap matters most on checks that need to reason about a value's actual origin.
+    It matters much less — heuristic and data-flow approaches converge — on checks that are really
+    about a syntactic shape or a configuration state, independent of any specific tainted value:
+  </p>
+  <ul>
+    <li><strong>Configuration flags</strong> — <code>config.force_ssl = false</code>,
+      <code>cookies_serializer = :marshal</code>, a session store missing <code>secure: true</code>.
+      There's no data flow to trace; the line either sets the dangerous value or it doesn't.</li>
+    <li><strong>Missing guard patterns</strong> — a controller class with no
+      <code>skip_before_action</code> naming a known auth filter, a write action with no visible
+      authorization call anywhere in the class. Structural, not flow-dependent.</li>
+    <li><strong>API misuse shapes</strong> — <code>Marshal.load</code> on anything, <code>JWT.decode</code>
+      with signature verification disabled, <code>http_basic_authenticate_with</code> with a string
+      literal password. The call shape alone is the finding.</li>
+  </ul>
+  <p>
+    This is also exactly the set of rules Scryer's <a
+    href="https://github.com/ramlaxmanyadav/scryer/blob/main/docs/fix-mode.md#fix-mode">fix mode</a> can
+    resolve automatically without an LLM — see <code>Scryer::MechanicalFixer</code> in the README.
+    Rules that genuinely need data-flow reasoning (<code>mass_assignment</code>'s correct
+    <code>.permit</code> list, <code>idor</code>'s correct authorization check) don't get a
+    mechanical fixer, because there isn't one correct answer a syntax-level tool can derive.
+  </p>
+
+  <h2>Which one should you use?</h2>
+  <p>
+    Not an either/or in practice — they answer different questions and cost different amounts to
+    run:
+  </p>
+  <table>
+    <tr><th></th><th>Taint/data-flow (Brakeman)</th><th>Heuristic (Scryer)</th></tr>
+    <tr><td>Precision on hard checks (IDOR, auth)</td><td>Higher</td><td>Lower — "review this," not "confirmed"</td></tr>
+    <tr><td>Needs Rails/framework boot</td><td>Yes</td><td>No</td></tr>
+    <tr><td>Also covers performance/dependencies</td><td>No</td><td>Yes, same pass</td></tr>
+    <tr><td>Cross-category severity ranking</td><td>No</td><td>Yes</td></tr>
+    <tr><td>Maturity on Rails-specific security</td><td>Years, purpose-built</td><td>Newer, broader scope</td></tr>
+  </table>
+  <p>
+    Running both costs nothing but CI minutes — different scanning strategies, no shared state, no
+    conflict. Brakeman for the deepest security-only analysis; Scryer for the cross-category
+    "what's actually most worth fixing this week" view across security, performance, dependencies,
+    and code quality.
+  </p>
+
+  <h2>Further reading</h2>
+  <div class="links">
+    <a href="./rails-security-scanner.html">What is a Rails security scanner?</a>
+    <a href="./security-code-review-checklist.html">Security code review checklist</a>
+    <a href="./dependency-security.html">Dependency security for Rails</a>
+    <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/docs/architecture.md#scryer-vs-rubocop-vs-brakeman-vs-bundler-audit">Full comparison table</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Scryer</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/scryer">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

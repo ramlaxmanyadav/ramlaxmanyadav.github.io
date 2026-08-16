@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dependency Security for Rails — Scryer (Ruby on Rails Security Auditor)</title>
+<meta name="description" content="How to audit a Rails app's Gemfile.lock for known-vulnerable gems, insecure sources, and Ruby end-of-life — what to check, how Scryer's live OSV.dev audit works, and how it compares to bundler-audit.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Scryer</a></p>
+    <h1>Dependency Security for Rails Applications</h1>
+    <p class="tagline">What a Gemfile.lock actually needs auditing for, and how a live
+      vulnerability-database query differs from a bundled/offline advisory list.</p>
+  </header>
+
+  <p>
+    Your own Rails code isn't the only place a real vulnerability can live — a gem you depend on
+    (directly, or transitively through another gem) can carry a known CVE, and Rails apps
+    accumulate dependencies quickly. Dependency security for Rails means checking
+    <code>Gemfile.lock</code> — the exact resolved versions your app actually runs, not just the
+    loose version ranges in <code>Gemfile</code> — against a database of known-vulnerable gem
+    versions, plus a couple of adjacent risks that aren't CVEs but are just as real.
+  </p>
+
+  <h2>What to actually check</h2>
+  <ul>
+    <li><strong>Known-vulnerable gem versions</strong> — does the exact locked version of every gem
+      in <code>Gemfile.lock</code> have a published advisory? This needs an up-to-date vulnerability
+      database, not a fixed list baked into the tool at release time — new CVEs are published
+      continuously, and a scanner with a stale bundled database will miss everything published
+      since its last release.</li>
+    <li><strong>Insecure gem sources</strong> — a <code>git:</code> or plain <code>http:</code>
+      (not <code>https:</code>) source in <code>Gemfile.lock</code> means that gem's code was
+      fetched over a channel that isn't verified/encrypted the way the default RubyGems source is —
+      a supply-chain risk independent of any specific CVE.</li>
+    <li><strong>Ruby's own end-of-life status</strong> — an EOL Ruby version stops receiving
+      security patches from ruby-lang.org entirely, which is a real risk even if every gem is
+      current.</li>
+    <li><strong>Leaked credentials in the repo</strong> — a committed, un-gitignored
+      <code>config/master.key</code> (Rails' encrypted-credentials key) means anyone with repo
+      access — including a public fork, if the repo is or ever becomes public — can decrypt
+      <code>config/credentials.yml.enc</code>.</li>
+  </ul>
+
+  <h2>Live query vs. bundled database — why it matters</h2>
+  <p>
+    There are two honest engineering approaches to "does this gem version have a known
+    vulnerability," and they trade off differently:
+  </p>
+  <table>
+    <tr><th></th><th>Bundled/offline advisory database</th><th>Live query</th></tr>
+    <tr><td>Works fully offline</td><td>Yes</td><td>No — needs network</td></tr>
+    <tr><td>Coverage of very recent CVEs</td><td>Only as fresh as the last gem release/DB update</td><td>Current as of the query</td></tr>
+    <tr><td>Maintenance burden</td><td>Someone has to keep syncing the database</td><td>None — the query is always live</td></tr>
+  </table>
+  <p>
+    Scryer takes the live-query approach deliberately: every scan queries <a
+    href="https://osv.dev">OSV.dev</a> (Google's open-source, cross-ecosystem vulnerability
+    database) for each unique gem in <code>Gemfile.lock</code>, so there's no stale bundled
+    database to fall out of date between releases — the tradeoff is that it needs network access
+    to run (skip with <code>--no-deps</code> for a fast, fully offline run when that matters more
+    than dependency coverage, e.g. a pre-commit hook). <a
+    href="https://github.com/rubysec/bundler-audit">bundler-audit</a> is the other well-known
+    option in this space, built independently on a different data source (the Ruby Advisory
+    Database) — running both costs nothing and covers slightly different ground.
+  </p>
+
+  <h2>Running it</h2>
+  <pre><code># Full scan, dependency audit included by default
+scryer
+
+# Dependency audit only, no static code scan — CI-gate mode, mirrors `bundle-audit check`
+scryer --audit-deps
+
+# One-off check of a single gem, outside a full scan
+scryer --check-gem rails:7.0.0
+
+# Skip the dependency audit entirely for a fast, fully offline run
+scryer --no-deps</code></pre>
+  <p>
+    Inside a Rails app: <code>bin/rails scryer:audit_dependencies</code> (dependency audit only) or
+    <code>bin/rails scryer:ci</code> (JSON + SARIF, dependency audit on, meant for a CI job). Every
+    dependency finding gets a severity and, same as every other finding, an optional
+    AI-rewritten remediation suggestion — see <a
+    href="https://github.com/ramlaxmanyadav/scryer/blob/main/docs/rules.md#dependency-audit">Dependency
+    audit</a> in the full README for exact flags and rake tasks.
+  </p>
+
+  <h2>Further reading</h2>
+  <div class="links">
+    <a href="./rails-security-scanner.html">What is a Rails security scanner?</a>
+    <a href="./security-code-review-checklist.html">Security code review checklist</a>
+    <a href="./taint-analysis-vs-heuristic-pattern-matching.html">Taint analysis vs. heuristics</a>
+    <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/docs/rules.md#dependency-audit">Full dependency audit docs</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Scryer</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/scryer">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>
