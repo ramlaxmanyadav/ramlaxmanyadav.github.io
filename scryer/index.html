@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Scryer — Ruby &amp; Rails Application Security &amp; Risk Auditor</title>
-<meta name="description" content="Scryer scans Ruby/Rails apps for security, performance, dependency, and code-quality risk, then ranks everything by severity so you know what to fix first.">
+<title>Scryer — Ruby on Rails Security Auditor</title>
+<meta name="description" content="Scryer is an all-in-one security auditing and static analysis tool for Ruby on Rails applications — tells you what to fix first, across security, performance, dependencies, and code quality.">
 <link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -50,9 +51,10 @@
 <div class="wrap">
 
   <header>
-    <h1>Scryer</h1>
-    <p class="tagline">Ruby &amp; Rails Application Security &amp; Risk Auditor — tells you what
-      to fix first, across security, performance, dependencies, and code quality.</p>
+    <h1>Scryer — Ruby on Rails Security Auditor</h1>
+    <p class="tagline">An all-in-one security auditing and static analysis tool for Ruby on Rails
+      applications — tells you what to fix first, across security, performance, dependencies, and
+      code quality.</p>
     <div class="badges">
       <a href="https://rubygems.org/gems/scryer"><span class="badge">gem install scryer</span></a>
       <a href="https://github.com/ramlaxmanyadav/scryer"><span class="badge">MIT licensed</span></a>
@@ -74,30 +76,32 @@ scryer</code></pre>
   <pre><code>Scryer Audit — 236 files scanned
 ────────────────────────────────
 
-Security Score: 11/100 (F)
+Security Score: 10/100 (F)
 Checks: 23/36 rules clean (63.9%)
 
-Security               26 findings
+Security               27 findings
 Performance            10 findings
 Code Quality          248 findings
 Dependencies           24 findings
 ────────────────────────────────
-Total                 308 findings
+Total                 309 findings
 
 Top priorities:
-  1. [critical] security — mass_assignment (app/controllers/api/v1/payouts_controller.rb:8)
-  2. [critical] security — mass_assignment (app/helpers/api/v1/create_charge_helper.rb:45)
-  3. [critical] security — mass_assignment (app/helpers/api/v1/terminal/terminal_helper.rb:92)
-  4. [critical] security — sql_injection (app/controllers/concerns/payment_method_helper.rb:21)
-  5. [critical] security — sql_injection (app/controllers/concerns/payment_method_helper.rb:12)
+  1. [critical] security — mass_assignment (app/helpers/api/v1/create_order_helper.rb:14)
+  2. [critical] security — mass_assignment (app/helpers/api/v1/create_order_helper.rb:45)
+  3. [critical] security — mass_assignment (app/helpers/api/v1/checkout/checkout_helper.rb:92)
+  4. [critical] security — sql_injection (app/controllers/concerns/billing_helper.rb:12)
+  5. [critical] security — mass_assignment (app/controllers/api/v1/orders_controller.rb:8)
 
 JSON report: tmp/scryer_report.json
 HTML report: tmp/scryer_report.html</code></pre>
 
-  <p>That's real output from a scan of a live 236-file Rails app, not a mockup — the harsh grade
-    included. "Top priorities" is the same severity ranking applied across <em>all</em>
-    categories, not just within each one; it's the first thing in the Findings section of the
-    HTML report, which also leads with a security score badge and severity chart.</p>
+  <p>That's real output from a scan of a live 236-file Rails app ("acme-app" here — file/controller
+    names anonymized since we don't publish that app's source; counts, severities, and line
+    numbers are exactly as scanned), not a mockup — the harsh grade included. "Top priorities" is
+    the same severity ranking applied across <em>all</em> categories, not just within each one;
+    it's the first thing in the Findings section of the HTML report, which also leads with a
+    security score badge and severity chart.</p>
 
   <h2>What it detects</h2>
   <ul>
@@ -162,7 +166,23 @@ HTML report: tmp/scryer_report.html</code></pre>
     None of them combine security, performance, dependency, and code-quality findings into one
     ranked list — that's what Scryer's "Top priorities" (shown above) does. Full breakdown with
     footnotes in the
-    <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/README.md#scryer-vs-rubocop-vs-brakeman-vs-bundler-audit">README</a>.</p>
+    <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/docs/architecture.md#scryer-vs-rubocop-vs-brakeman-vs-bundler-audit">README</a>.</p>
+
+  <h2>Guides</h2>
+  <ul>
+    <li><a href="./rails-security-scanner.html">What is a Rails security scanner?</a> — SAST for
+      Rails explained, what a scanner actually checks, and where Scryer sits among Brakeman,
+      RuboCop, and bundler-audit.</li>
+    <li><a href="./taint-analysis-vs-heuristic-pattern-matching.html">Taint analysis vs. heuristic
+      pattern matching</a> — the honest engineering tradeoff behind Scryer's approach, with real
+      Ruby examples of where each one is right and wrong.</li>
+    <li><a href="./dependency-security.html">Dependency security for Rails applications</a> — what
+      a <code>Gemfile.lock</code> audit actually needs to check, and why Scryer queries OSV.dev
+      live instead of shipping a bundled advisory database.</li>
+    <li><a href="./security-code-review-checklist.html">Security code review checklist for
+      Rails</a> — a concrete, usable PR checklist, split by what a static analyzer can catch versus
+      what still needs a human.</li>
+  </ul>
 
   <h2>Links</h2>
   <div class="links">
@@ -170,6 +190,7 @@ HTML report: tmp/scryer_report.html</code></pre>
     <a href="https://github.com/ramlaxmanyadav/scryer/blob/main/README.md">Full README</a>
     <a href="https://rubygems.org/gems/scryer">RubyGems</a>
     <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
   </div>
 
   <footer>
