@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Choosing a Ruby HTTP Client: Butler vs. Faraday vs. Excon vs. HTTParty vs. Net::HTTP — Butler</title>
+<meta name="description" content="A straight, contender-by-contender comparison of Ruby's HTTP client options — Net::HTTP, Faraday, Excon, HTTP.rb, HTTParty, Async::HTTP, and Butler — and which trade-offs actually matter for your project.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Butler</a></p>
+    <h1>Choosing a Ruby HTTP Client: Butler vs. Faraday vs. Excon vs. HTTParty vs. Net::HTTP</h1>
+    <p class="tagline">Ruby's HTTP client landscape is a set of trade-offs, not a clear winner —
+      here's what each one is actually strong at, and where it isn't.</p>
+  </header>
+
+  <h2>Net::HTTP</h2>
+  <p>
+    The standard library client — always available, no dependency to add. Low-level by design: no
+    HTTP/2, no retries, no timeouts unless you set them explicitly (and it's easy to forget one and
+    ship a client with no read timeout at all). A reasonable choice when you're making one or two
+    simple calls and don't want a dependency; a poor foundation to build a service's entire outbound
+    HTTP layer on without wrapping it yourself first.
+  </p>
+
+  <h2>Faraday</h2>
+  <p>
+    The ecosystem play — a huge middleware library and pluggable adapters (Net::HTTP, Excon,
+    Typhoeus, and others underneath the same API). That flexibility is also its cost: the
+    adapter/middleware abstraction is a real layer of indirection, and Faraday's own behavior can
+    shift depending on which adapter you've plugged in underneath it. Strong choice if you want that
+    ecosystem's breadth and are fine configuring resilience yourself via middleware.
+  </p>
+
+  <h2>Excon</h2>
+  <p>
+    Performance-focused, with a long track record in production. Less opinionated about
+    resilience/developer-experience out of the box than newer clients — you're more likely to be
+    reaching for extra gems or writing your own retry/circuit-breaker logic around it.
+  </p>
+
+  <h2>HTTP.rb</h2>
+  <p>
+    A genuinely Ruby-friendly API (chainable, readable call sites). Its concurrency/transport model is
+    different from a Fiber-scheduler-based one — worth checking directly against your own app's
+    concurrency model (thread-per-request web server vs. a Fiber-scheduler-based one like Falcon)
+    before assuming it composes the way you'd expect.
+  </p>
+
+  <h2>HTTParty</h2>
+  <p>
+    The simplest possible <code>ClassName.get(url)</code> call, and genuinely the fastest way to get
+    something working. The cost of that simplicity: no connection reuse across calls (each bare
+    <code>.get</code> opens fresh), no HTTP/2, and no built-in resilience — fine for a quick script or
+    prototype, a real gap for anything calling the same API repeatedly in production.
+  </p>
+
+  <h2>Async::HTTP</h2>
+  <p>
+    An excellent async foundation — real Fiber-native HTTP/1.1 and HTTP/2, per-origin connection
+    pooling, stream multiplexing, all implemented well. What it doesn't give you is a client-facing
+    API or resilience layer above that foundation — you're building your own
+    <code>Client</code>/<code>Request</code>/<code>Response</code> abstraction, your own retry policy,
+    your own circuit breaker, on top of it yourself.
+  </p>
+
+  <h2>Butler</h2>
+  <p>
+    Butler's position: take the strongest idea from each without the downsides it usually comes
+    with — a small, deliberately-scoped public API (<code>Client</code>, <code>Request</code>,
+    <code>Response</code>, <code>Headers</code>) in front of real HTTP/1.1 <strong>and</strong> HTTP/2,
+    Fiber-native concurrency (built on the same reactor <code>Async::HTTP</code> provides, not a
+    competing implementation of it), and resilience/security/observability that don't require four
+    extra gems to assemble yourself. The trade-off is real too: Butler is younger and has a smaller
+    ecosystem than Faraday's — if you need Faraday's specific middleware library, or an adapter it
+    supports that Butler doesn't aim to, that's a legitimate reason to stay with it.
+  </p>
+
+  <h2>Side-by-side</h2>
+  <table>
+    <tr><th>Capability</th><th>Butler</th><th>Faraday</th><th>Excon</th><th>Net::HTTP</th></tr>
+    <tr><td>Fiber-native concurrency</td><td>✓</td><td>—</td><td>—</td><td>limited</td></tr>
+    <tr><td>HTTP/2 (ALPN, multiplexed)</td><td>✓ (first-class)</td><td>adapter-dependent</td><td>limited</td><td>depends</td></tr>
+    <tr><td>Connection pooling</td><td>✓</td><td>adapter</td><td>✓</td><td>manual</td></tr>
+    <tr><td>Retries + backoff/jitter</td><td>built-in</td><td>middleware</td><td>limited</td><td>manual</td></tr>
+    <tr><td>Circuit breaker</td><td>built-in</td><td>external gem</td><td>external gem</td><td>external gem</td></tr>
+    <tr><td>Deadlines (total budget across retries)</td><td>✓</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>Native request stubbing</td><td>✓</td><td>via WebMock</td><td>via WebMock</td><td>via WebMock</td></tr>
+  </table>
+  <p>
+    This describes each library's design intent, not an independently re-verified benchmark of every
+    listed library's current release — re-check before quoting it externally. Full matrix (including
+    HTTParty, HTTP.rb, and Async::HTTP) and a real Sequential/Concurrent benchmark run against several
+    of these clients in the
+    <a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/README.md#why-butler">README</a>.
+  </p>
+
+  <h2>Further reading</h2>
+  <ul>
+    <li><a href="./fiber-based-concurrency-in-ruby.html">Fiber-based concurrency in Ruby, explained</a>.</li>
+    <li><a href="./resilient-http-clients-timeouts-retries-circuit-breakers.html">Building resilient
+      HTTP clients</a>.</li>
+    <li><a href="https://github.com/ramlaxmanyadav/butler-http/tree/main/benchmarks">Butler's own
+      benchmark suite</a> — Net::HTTP/Faraday/Excon/HTTParty comparisons with real numbers, not just
+      claims.</li>
+    <li><a href="./index.html">Back to Butler</a>.</li>
+  </ul>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/butler-http">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

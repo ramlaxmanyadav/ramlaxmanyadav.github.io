@@ -1,0 +1,24 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Local secrets/config — never committed even if one shows up locally
+.env
+.env.local
+.env.*.local
+
+# Per-developer Claude Code settings (project-level .claude/settings.json,
+# if one is ever added, is meant to be shared — this is just the local
+# override); already covered by a global ~/.config/git/ignore on this
+# machine, but not guaranteed on a fresh clone/contributor's machine.
+.claude/settings.local.json

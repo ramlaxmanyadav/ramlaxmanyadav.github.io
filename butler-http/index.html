@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Butler — A Fiber-native HTTP client for Ruby with HTTP/1.1 and HTTP/2, structured concurrency, and built-in resilience.</title>
+<meta name="description" content="Butler is a Ruby HTTP client designed around modern Fiber-based concurrency — HTTP/1.1 and HTTP/2 with transparent ALPN negotiation, structured concurrency, built-in resilience (timeouts, deadlines, retries, circuit breaker), and security-conscious defaults.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  h1 { font-size: 1.9rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  .badges { margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .badges a { text-decoration: none; }
+  .badge {
+    display: inline-block; font-size: 0.78rem; font-weight: 600; padding: 0.3rem 0.7rem;
+    border-radius: 999px; background: #eef2ff; color: #3730a3; border: 1px solid #e0e7ff;
+  }
+  h2 { font-size: 1.15rem; margin-top: 2.5rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a {
+    color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem;
+  }
+  .links a:hover { text-decoration: underline; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  td:not(:first-child) { text-align: center; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Butler — a Ruby HTTP client designed around modern Fiber-based concurrency</h1>
+    <p class="tagline">HTTP/1.1 and HTTP/2 with transparent ALPN negotiation, structured concurrency,
+      built-in resilience, and security-conscious defaults — without ever exposing its transport in
+      the public API.</p>
+    <div class="badges">
+      <a href="https://rubygems.org/gems/butler-http"><span class="badge">gem install butler-http</span></a>
+      <a href="https://github.com/ramlaxmanyadav/butler-http"><span class="badge">MIT licensed</span></a>
+      <a href="https://github.com/ramlaxmanyadav/butler-http"><span class="badge">GitHub</span></a>
+    </div>
+  </header>
+
+  <p>
+    Butler owns its own public API — <code>Client</code>, <code>Request</code>, <code>Response</code>,
+    <code>Headers</code> — built around Ruby's <code>Fiber::Scheduler</code> rather than one Thread per
+    in-flight request. That's the whole point of the design: real HTTP/2 multiplexing, structured
+    concurrency you can actually reason about (<code>client.async { |tasks| ... }</code>), and a
+    resilience layer (timeouts, deadlines, retries with backoff+jitter, a circuit breaker) that's part
+    of the client, not four extra gems bolted onto <code>Net::HTTP</code>.
+  </p>
+
+  <pre><code>gem install butler-http</code></pre>
+
+  <pre><code># HTTParty-style, zero setup:
+Butler.get("https://api.example.com/users").json
+
+# Or a configured Client, for connection pooling/retries/middleware tuned per-API:
+client = Butler::Client.new(base_url: "https://api.example.com")
+
+client.async do |tasks|
+  users  = tasks.async { client.get("/users") }
+  orders = tasks.async { client.get("/orders") }
+  { users: users.wait.json, orders: orders.wait.json }
+end</code></pre>
+
+  <h2>What it does</h2>
+  <ul>
+    <li><strong>HTTP/1.1 and HTTP/2</strong> — transparent ALPN negotiation, multiplexed connection
+      pooling per origin, and a per-call <code>http_version:</code> override when you need to force
+      one or the other.</li>
+    <li><strong>Structured concurrency</strong> — <code>client.async { |tasks| tasks.async { ... } }</code>
+      gives real parent/child task cancellation and exception propagation, backed by an
+      <code>Async::Barrier</code>, not a bare Thread pool.</li>
+    <li><strong>Built-in resilience</strong> — a total-budget <code>deadline:</code> that survives every
+      retry and redirect hop, exponential backoff with jitter, a <code>CLOSED → OPEN → HALF_OPEN</code>
+      circuit breaker, and retry rules that actually respect HTTP semantics (POST is never
+      auto-retried on a 5xx).</li>
+    <li><strong>Security-conscious defaults</strong> — TLS/hostname verification on by default,
+      certificate-verification failures are never retried (a bad cert won't become valid on the next
+      attempt), a host allow/block list, response/header size limits, and credential stripping on
+      cross-origin redirects.</li>
+    <li><strong>Observability and testing</strong> — standalone instrumentation with optional
+      OpenTelemetry and Rails/ActiveSupport::Notifications bridges, plus native request stubbing with
+      no WebMock/VCR dependency.</li>
+  </ul>
+
+  <h2>How it compares</h2>
+  <table>
+    <tr><th>Capability</th><th>Butler</th><th>Faraday</th><th>Excon</th><th>Net::HTTP</th></tr>
+    <tr><td>Fiber-native concurrency</td><td>✓</td><td>—</td><td>—</td><td>limited</td></tr>
+    <tr><td>HTTP/2 (ALPN, multiplexed)</td><td>✓ (first-class)</td><td>adapter-dependent</td><td>limited</td><td>depends</td></tr>
+    <tr><td>Connection pooling</td><td>✓</td><td>adapter</td><td>✓</td><td>manual</td></tr>
+    <tr><td>Retries + backoff/jitter</td><td>built-in</td><td>middleware</td><td>limited</td><td>manual</td></tr>
+    <tr><td>Circuit breaker</td><td>built-in</td><td>external gem</td><td>external gem</td><td>external gem</td></tr>
+    <tr><td>Deadlines (total budget across retries)</td><td>✓</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>OpenTelemetry</td><td>first-class, optional</td><td>external</td><td>external</td><td>external</td></tr>
+    <tr><td>Native request stubbing</td><td>✓</td><td>via WebMock</td><td>via WebMock</td><td>via WebMock</td></tr>
+  </table>
+  <p>
+    The one architectural rule that keeps this from rotting into "Faraday but slower": Butler owns
+    its public abstractions. <code>async</code>/<code>async-http</code> implement the real transport
+    underneath, but nothing outside <code>lib/butler/transport.rb</code> ever touches those types —
+    the public API doesn't change if the transport underneath it ever does. Full breakdown, including
+    Excon/HTTParty and a real Sequential/Concurrent benchmark matrix, in the
+    <a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/README.md">README</a>.
+  </p>
+
+  <h2>Guides</h2>
+  <ul>
+    <li><a href="./fiber-based-concurrency-in-ruby.html">Fiber-based concurrency in Ruby, explained</a>
+      — what <code>Fiber::Scheduler</code> actually is, thread-per-request vs. Fiber-per-request, and
+      why it fits I/O-bound HTTP work specifically.</li>
+    <li><a href="./http2-multiplexing-vs-http1-pooling.html">HTTP/2 multiplexing vs. HTTP/1.1 connection
+      pooling</a> — the conceptual difference, and what it actually buys you under real concurrency.</li>
+    <li><a href="./resilient-http-clients-timeouts-retries-circuit-breakers.html">Building resilient HTTP
+      clients: timeouts, deadlines, retries, and circuit breakers</a> — the concepts, and where a naive
+      implementation of each one quietly goes wrong.</li>
+    <li><a href="./choosing-a-ruby-http-client.html">Choosing a Ruby HTTP client: Butler vs. Faraday vs.
+      Excon vs. HTTParty vs. Net::HTTP</a> — a straight, contender-by-contender comparison.</li>
+  </ul>
+
+  <h2>Links</h2>
+  <div class="links">
+    <a href="https://github.com/ramlaxmanyadav/butler-http">GitHub repo</a>
+    <a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/README.md">Full README</a>
+    <a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/docs/architecture.md">Architecture docs</a>
+    <a href="https://rubygems.org/gems/butler-http">RubyGems</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/butler-http">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

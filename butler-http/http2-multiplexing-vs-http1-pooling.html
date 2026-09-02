@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTTP/2 Multiplexing vs. HTTP/1.1 Connection Pooling — Butler</title>
+<meta name="description" content="The conceptual difference between HTTP/1.1 connection pooling and HTTP/2 stream multiplexing, what it actually buys you under concurrency, and how Butler negotiates and pools each one.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Butler</a></p>
+    <h1>HTTP/2 Multiplexing vs. HTTP/1.1 Connection Pooling</h1>
+    <p class="tagline">Two different answers to the same problem — "how do I send many requests to one
+      host without waiting for each one to finish first" — and why they perform differently under real
+      concurrency.</p>
+  </header>
+
+  <h2>The problem both are solving</h2>
+  <p>
+    A single TCP+TLS connection can only carry one HTTP/1.1 request/response at a time — send a
+    request, wait for the full response, only then can the next request go out on that same
+    connection. Fire off five concurrent requests to the same host over HTTP/1.1 and something has to
+    give: either they queue up behind each other on one connection, or the client opens more
+    connections and spreads the requests across them.
+  </p>
+
+  <h2>HTTP/1.1's answer: connection pooling</h2>
+  <p>
+    Open several TCP+TLS connections to the same host (traditionally capped somewhere around 6-8 per
+    host — browsers and most HTTP libraries converge on a similar number) and hand out one per
+    in-flight request, reusing an idle one once its request completes rather than paying DNS/TCP/TLS
+    setup again. This works, and it's simple, but it has a hard ceiling: with a fixed pool size,
+    request six has to wait for one of the first five to free up a connection, no matter how idle the
+    server actually is.
+  </p>
+
+  <h2>HTTP/2's answer: multiplex over one connection</h2>
+  <p>
+    HTTP/2 introduces streams: many logical request/response exchanges interleaved over a
+    <em>single</em> TCP+TLS connection, each identified by a stream ID, with frames from different
+    streams free to interleave on the wire. The practical effect is that "how many requests can be
+    in flight to this host right now" stops being bounded by a small connection-pool number and
+    becomes bounded by the server's own concurrent-stream limit instead — usually far higher, and one
+    TLS handshake instead of several.
+  </p>
+
+  <h2>What this actually buys you</h2>
+  <p>
+    Fewer TCP+TLS handshakes (cheaper for both sides, especially over a higher-latency network, since
+    each handshake costs its own round trips before any request bytes even go out), and no artificial
+    "wait for a free connection" ceiling on how much concurrency one host can serve. It's not free
+    either: head-of-line blocking moves from the connection level to the TCP level (a lost packet can
+    still stall every multiplexed stream sharing that one TCP connection), and a server that doesn't
+    actually raise its concurrent-stream limit meaningfully won't give you much over a well-tuned
+    HTTP/1.1 pool.
+  </p>
+
+  <h2>How Butler negotiates and pools each one</h2>
+  <p>
+    Butler's default (<code>http_version: :auto</code>) offers both <code>h2</code> and
+    <code>http/1.1</code> during the TLS handshake's ALPN extension and lets the server pick — HTTP/2
+    whenever it supports it, HTTP/1.1 otherwise, no separate negotiation step. <code>:http1</code>/
+    <code>:http2</code> force one or the other, settable both on a client and per call
+    (<code>client.get(path, http_version: :http1)</code>).
+  </p>
+  <p>
+    Because the two protocols behave differently at the connection level, Butler's connection pool
+    fingerprints on <code>http_version</code> alongside origin — a call pinned to <code>:http1</code>
+    never reuses (or evicts) a connection that already negotiated <code>:http2</code> for the same
+    host, and vice versa. The pool itself doesn't reimplement per-origin pooling or HTTP/2 stream
+    multiplexing by hand — <code>Async::HTTP::Client</code> already does both internally, so Butler's
+    <code>ConnectionPool</code> is a thin, bounded (LRU-evicted) registry mapping that fingerprint to
+    one memoized client.
+  </p>
+
+  <h2>Further reading</h2>
+  <ul>
+    <li><a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/docs/architecture.md#why-connectionpool-isnt-a-socket-pool">Why ConnectionPool isn't a socket pool</a>
+      in Butler's architecture docs.</li>
+    <li><a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/benchmarks/http1_vs_http2.rb">benchmarks/http1_vs_http2.rb</a>
+      — 1000 concurrent requests over pooled HTTP/1.1 vs. one multiplexed HTTP/2 connection.</li>
+    <li><a href="./fiber-based-concurrency-in-ruby.html">Fiber-based concurrency in Ruby, explained</a>
+      — the concurrency model this all runs on.</li>
+    <li><a href="./index.html">Back to Butler</a>.</li>
+  </ul>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/butler-http">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

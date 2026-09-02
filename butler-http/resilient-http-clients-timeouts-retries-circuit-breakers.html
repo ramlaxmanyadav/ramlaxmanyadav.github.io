@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Building Resilient HTTP Clients: Timeouts, Deadlines, Retries, and Circuit Breakers — Butler</title>
+<meta name="description" content="Timeouts vs. deadlines, exponential backoff with jitter, the CLOSED/OPEN/HALF_OPEN circuit breaker state machine, and why not every failure is worth retrying — with Butler's own implementation as the worked example.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Butler</a></p>
+    <h1>Building Resilient HTTP Clients: Timeouts, Deadlines, Retries, and Circuit Breakers</h1>
+    <p class="tagline">Four mechanisms that sound simple in isolation and interact in ways that are
+      easy to get subtly wrong — timeouts that don't compose, retries that make an outage worse,
+      circuit breakers with no shared state.</p>
+  </header>
+
+  <h2>Timeouts vs. deadlines — not the same thing</h2>
+  <p>
+    A per-stage timeout (connect timeout, read timeout) bounds one phase of one attempt. A
+    <strong>deadline</strong> is a total wall-clock budget for the entire call — every retry attempt
+    and every redirect hop counted against the same clock, started once and never reset. Conflating
+    the two is a common bug: a generous per-attempt read timeout combined with several retries can add
+    up to a caller waiting far longer than they ever agreed to, because nothing was tracking the total.
+    The fix is mechanical once you see it: compute each attempt's actual bound as
+    <code>min(per_attempt_timeout, deadline.remaining)</code>, so a per-attempt timeout can never add
+    extra time on top of the total budget, no matter how many retries or redirects happen inside it.
+  </p>
+
+  <h2>Retries: not every failure deserves one</h2>
+  <p>
+    The reflex "just retry on failure" is right often enough to be dangerous the rest of the time.
+    Two distinctions matter:
+  </p>
+  <ul>
+    <li><strong>Idempotency.</strong> GET/HEAD/OPTIONS are always safe to retry — nothing that reached
+      the server can be confirmed either way, and retrying doesn't make a read any less safe. POST is
+      a write with no idempotency guarantee; auto-retrying it on a 5xx risks a double-charge, a
+      duplicate order, a second email sent — so it shouldn't happen without the caller explicitly
+      opting in per-request.</li>
+    <li><strong>Permanent vs. transient failure.</strong> Not everything that raises an exception is
+      transient. A connection reset or a timeout might genuinely succeed on the next attempt. A TLS
+      certificate that fails verification — self-signed, expired, wrong hostname — will not become
+      valid a few hundred milliseconds later; retrying it just delays surfacing a real problem behind
+      a generic "retries exhausted" error instead of the actual certificate failure. Getting this
+      distinction wrong in either direction is a real bug, not a style choice: retry too eagerly and
+      you waste time (or worse, mask a security failure); retry too conservatively and a genuinely
+      transient blip becomes a hard failure the caller didn't need to see.</li>
+  </ul>
+  <p>
+    Backoff matters too, separately from whether to retry at all: retrying immediately after a
+    failure just adds more load to a server that's already struggling. Exponential backoff spaces
+    retries out geometrically; jitter (scaling each computed delay by a random factor rather than
+    using it exactly) exists specifically so that many clients failing at the same moment — a common
+    real-world case — don't all retry in lockstep and hit the recovering server with a synchronized
+    thundering herd.
+  </p>
+
+  <h2>Circuit breakers: stop calling a service that's already down</h2>
+  <p>
+    Retries and backoff help one caller ride out a blip. They don't help when a downstream service is
+    genuinely down for an extended period — every caller still tries, still waits out its timeout,
+    still retries, all against a service that isn't coming back in the next few seconds. A circuit
+    breaker tracks failures per scope (typically per host) and, once a failure threshold is crossed,
+    trips open: every call fails immediately with a clear "circuit open" error instead of waiting out
+    a doomed timeout. After a recovery window, it allows exactly one probe request through — a success
+    closes the circuit again, a failure reopens it. The three states
+    (<code>CLOSED → OPEN → HALF_OPEN</code>) are the standard shape for this; what varies between
+    implementations is scope (per-host vs. one shared breaker per client) and what counts as a
+    "failure" (a raised transport error, a 5xx response, or both).
+  </p>
+
+  <h2>How Butler puts these together</h2>
+  <p>
+    A <code>Resilience::Deadline</code> is created once per call and threaded through every middleware
+    and every retry/redirect attempt inside it. Per-attempt timeouts are always additionally capped by
+    the deadline's remaining budget. Retries follow the idempotency rule above exactly — GET/HEAD/
+    OPTIONS retried automatically, POST never auto-retried on a 5xx, PUT/DELETE only when explicitly
+    marked <code>idempotent: true</code> — with exponential backoff and equal-jitter, and
+    <code>Retry-After</code> honored ahead of the computed delay when a server sends one. Certificate
+    verification failures are raised as their own error type specifically so the retry policy can
+    exclude them while still retrying other, genuinely transient TLS failures — the permanent-vs-
+    transient distinction above, enforced in code rather than left as a judgment call at the call
+    site. The circuit breaker is a
+    <code>CLOSED → OPEN → HALF_OPEN → CLOSED/OPEN</code> state machine, scoped per-host by default.
+  </p>
+
+  <h2>Further reading</h2>
+  <ul>
+    <li><a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/docs/architecture.md#deadline-vs-per-stage-timeouts">Deadline vs. per-stage timeouts</a>
+      in Butler's architecture docs.</li>
+    <li><a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/README.md#retries">Retries</a>
+      and <a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/README.md#circuit-breaker">circuit
+      breaker</a> configuration in the README.</li>
+    <li><a href="./choosing-a-ruby-http-client.html">Choosing a Ruby HTTP client</a> — how this compares
+      across Butler, Faraday, Excon, HTTParty, and Net::HTTP.</li>
+    <li><a href="./index.html">Back to Butler</a>.</li>
+  </ul>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/butler-http">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

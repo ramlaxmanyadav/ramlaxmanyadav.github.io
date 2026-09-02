@@ -1,0 +1,1292 @@
+# Butler — Fiber-Native HTTP Client for Ruby
+
+> Butler is a Ruby HTTP client designed around modern Fiber-based concurrency — not a thin wrapper
+> around the `async`/`async-http` gems it's built on. It owns its own public API
+> (`Client`/`Request`/`Response`/`Headers`) in front of real HTTP/1.1 **and** HTTP/2 (transparent ALPN
+> negotiation, multiplexed connection pooling), structured concurrency (`client.async { |tasks| ... }`,
+> backed by an `Async::Barrier` for real parent/child cancellation), and a resilience layer (timeouts,
+> a total-budget deadline that survives every retry/redirect, retries with exponential backoff and
+> jitter, a CLOSED/OPEN/HALF_OPEN circuit breaker) built in rather than assembled from four extra gems.
+
+Security-conscious defaults: TLS/hostname verification on by default, certificate-verification
+failures raised as their own error type and never retried (a bad certificate won't become valid on the
+next attempt), a host allow/block list, response/header size limits, and credential stripping on
+cross-origin redirects. Standalone instrumentation with optional OpenTelemetry and Rails/
+ActiveSupport::Notifications bridges. Native request stubbing with no WebMock/VCR dependency.
+
+## Getting started
+
+- [README](https://github.com/ramlaxmanyadav/butler-http/blob/main/README.md): the pitch, quick start,
+  full usage reference, and configuration options.
+- [llms-full.txt](https://ramlaxmanyadav.github.io/butler-http/llms-full.txt): this file plus the
+  complete content of the README, the architecture docs, and the benchmarks README, concatenated into
+  one fetch — for agents that prefer a single request over following links.
+- [gemspec](https://github.com/ramlaxmanyadav/butler-http/blob/main/butler-http.gemspec): gem metadata,
+  version, and dependency floors.
+
+## Documentation
+
+- [Architecture](https://github.com/ramlaxmanyadav/butler-http/blob/main/docs/architecture.md):
+  request lifecycle, the middleware pipeline order, why `ConnectionPool` isn't a socket pool, the
+  background-reactor design that makes bare synchronous calls not pay per-call reactor setup, the
+  deadline-vs-per-stage-timeout model, and the HTTP/3 (QUIC) foundational work in progress (packet-level
+  crypto only so far — not reachable from the public API yet).
+- [Benchmarks](https://github.com/ramlaxmanyadav/butler-http/blob/main/benchmarks/README.md): seven
+  scripts covering sequential vs. concurrent, HTTP/1.1 vs. HTTP/2, allocations, memory, and a
+  Butler/Net::HTTP/Faraday/Excon/HTTParty comparison matrix — real measured numbers, not claims.
+
+## Guides
+
+- [Fiber-based concurrency in Ruby, explained](https://ramlaxmanyadav.github.io/butler-http/fiber-based-concurrency-in-ruby.html):
+  what `Fiber::Scheduler` actually is, thread-per-request vs. Fiber-per-request, and why it fits
+  I/O-bound HTTP work specifically.
+- [HTTP/2 multiplexing vs. HTTP/1.1 connection pooling](https://ramlaxmanyadav.github.io/butler-http/http2-multiplexing-vs-http1-pooling.html):
+  the conceptual difference, and what it actually buys you under real concurrency.
+- [Building resilient HTTP clients: timeouts, deadlines, retries, and circuit breakers](https://ramlaxmanyadav.github.io/butler-http/resilient-http-clients-timeouts-retries-circuit-breakers.html):
+  the concepts, and where a naive implementation of each one quietly goes wrong.
+- [Choosing a Ruby HTTP client: Butler vs. Faraday vs. Excon vs. HTTParty vs. Net::HTTP](https://ramlaxmanyadav.github.io/butler-http/choosing-a-ruby-http-client.html):
+  a straight, contender-by-contender comparison.
+
+## Quick start
+
+```ruby
+# HTTParty-style, zero setup:
+Butler.get("https://api.example.com/users").json
+
+# Or a configured Client, for connection pooling/retries/middleware tuned per-API:
+client = Butler::Client.new(base_url: "https://api.example.com")
+
+client.async do |tasks|
+  users  = tasks.async { client.get("/users") }
+  orders = tasks.async { client.get("/orders") }
+  { users: users.wait.json, orders: orders.wait.json }
+end
+```
+
+## What it does
+
+- HTTP/1.1 and HTTP/2 with transparent ALPN negotiation; `http_version: :auto|:http1|:http2`,
+  overridable per client or per call.
+- Structured concurrency via `client.async`, real parent/child task cancellation and exception
+  propagation.
+- Resilience: total-budget `deadline:` across every retry/redirect, exponential backoff with jitter,
+  `Retry-After` support, a per-host circuit breaker, retry rules that respect HTTP semantics (POST
+  never auto-retried on a 5xx; GET/HEAD/OPTIONS always retry-eligible; PUT/DELETE only when marked
+  `idempotent: true`).
+- Security: TLS/hostname verification on by default, host allow/block list, response/header size
+  limits, credential stripping on cross-origin redirects.
+- Observability: standalone instrumentation, optional OpenTelemetry spans, optional Rails/
+  ActiveSupport::Notifications bridge.
+- Testing: native request stubbing (`Butler::Testing.stub_request`), no WebMock/VCR dependency.
+- Runtime dependencies: `async` and `async-http` only (both from the
+  [socketry](https://github.com/socketry) ecosystem) — Butler owns its public abstractions on top;
+  nothing outside `lib/butler/transport.rb` ever touches those types.
+
+## Links
+
+- [GitHub repo](https://github.com/ramlaxmanyadav/butler-http)
+- [RubyGems](https://rubygems.org/gems/butler-http)
+- [This site's index](https://ramlaxmanyadav.github.io/butler-http/)
+
+---
+
+# Full documentation (concatenated)
+
+---
+
+# README.md
+
+# Butler
+
+**A Fiber-native HTTP client for Ruby: HTTP/1.1 and HTTP/2 with transparent
+ALPN negotiation, structured concurrency, built-in resilience, and
+security-conscious defaults — without ever exposing its transport in the
+public API.**
+
+```ruby
+# HTTParty-style, zero setup:
+Butler.get("https://api.example.com/users").json
+
+# Or a configured Client, for connection pooling/retries/middleware tuned per-API:
+client = Butler::Client.new(base_url: "https://api.example.com")
+
+client.async do |tasks|
+  users  = tasks.async { client.get("/users") }
+  orders = tasks.async { client.get("/orders") }
+  { users: users.wait.json, orders: orders.wait.json }
+end
+```
+
+## Table of contents
+
+- [Why Butler](#why-butler)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Architecture, in one picture](#architecture-in-one-picture)
+- [Usage](#usage)
+  - [Module-level shortcuts](#module-level-shortcuts)
+  - [Requests](#requests)
+  - [Bodies](#bodies)
+  - [Streaming](#streaming)
+  - [Structured concurrency](#structured-concurrency)
+  - [Deadlines and timeouts](#deadlines-and-timeouts)
+  - [Retries](#retries)
+  - [Circuit breaker](#circuit-breaker)
+  - [Security](#security)
+  - [Telemetry](#telemetry)
+  - [Middleware](#middleware)
+  - [Testing — no WebMock/VCR needed](#testing--no-webmockvcr-needed)
+  - [Rails](#rails)
+  - [Errors](#errors)
+- [Configuration reference](#configuration-reference)
+- [Benchmarks](#benchmarks)
+- [What's not here yet](#whats-not-here-yet)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Why Butler
+
+Ruby's HTTP client landscape is a set of trade-offs, not a clear winner:
+
+| Client | Strength | Limitation |
+| --- | --- | --- |
+| `Net::HTTP` | Standard library | Low-level, no HTTP/2, easy to misuse (no default timeouts) |
+| Faraday | Excellent ecosystem/middleware | The adapter/middleware abstraction itself adds a layer of indirection |
+| Excon | Performance-focused | Less opinionated about resilience/DX out of the box |
+| HTTP.rb | Ruby-friendly API | Different concurrency/transport model than Fiber-based servers |
+| HTTParty | The simplest possible `ClassName.get(url)` call | No connection reuse across calls, no HTTP/2, no built-in resilience |
+| Async::HTTP | Excellent async foundation | Lower-level; you build the client-facing API and resilience yourself |
+
+Butler's position: take the strongest ideas from each without the
+downsides — a small, deliberately-scoped public API (`Client`, `Request`,
+`Response`, `Headers`) in front of real HTTP/1.1 **and** HTTP/2, Fiber-native
+concurrency, and resilience/security/observability that don't require four
+extra gems to get.
+
+| Capability | Butler | Faraday | Excon | Net::HTTP |
+| --- | --- | --- | --- | --- |
+| Fiber-native concurrency | ✓ | — | — | limited |
+| HTTP/2 (ALPN, multiplexed) | ✓ (first-class) | adapter-dependent | limited | depends |
+| Connection pooling | ✓ | adapter | ✓ | manual |
+| Retries + backoff/jitter | built-in | middleware | limited | manual |
+| Circuit breaker | built-in | external gem | external gem | external gem |
+| Deadlines (total budget across retries) | ✓ | — | — | — |
+| OpenTelemetry | first-class, optional | external | external | external |
+| Native request stubbing | ✓ | via WebMock | via WebMock | via WebMock |
+| Rails integration | optional, not required | good | good | basic |
+
+*(This table describes Butler's design intent honestly; it hasn't been
+independently re-verified against every listed library's current release —
+re-check before quoting it externally.)*
+
+**The one architectural rule that keeps this from rotting into "Faraday but
+slower":** Butler owns its public abstractions. `async`/`async-http`
+implement the real transport underneath, but nothing outside
+`lib/butler/transport.rb` ever touches those types — the public API
+(`Client`/`Request`/`Response`/`Headers`) doesn't change if the transport
+underneath it ever does. See [docs/architecture.md](docs/architecture.md).
+
+## Installation
+
+```ruby
+# Gemfile
+gem "butler-http"
+```
+
+```
+bundle install
+```
+
+Or without Bundler:
+
+```
+gem install butler-http
+```
+
+Requires Ruby >= 3.1. Runtime dependencies are `async` and `async-http`
+(both from the [socketry](https://github.com/socketry) ecosystem) — Butler
+keeps its own dependency footprint to just those two, so it stays a
+reasonable choice for non-Rails Ruby projects too, not just Rails apps that
+already pull in a large dependency tree.
+
+## Quick start
+
+The fastest way in — module-level calls, HTTParty-style, no `Client` to set
+up first:
+
+```ruby
+require "butler"
+
+response = Butler.get("https://api.example.com/users")
+response.status   # => 200
+response.headers  # => Butler::Headers
+response.body     # => raw body String
+response.json     # => parsed JSON (Hash/Array), or nil if the body isn't valid JSON
+
+response = Butler.post("https://api.example.com/users", json: { name: "Ram", email: "ram@example.com" })
+Butler.get("https://api.example.com/users", headers: { "Authorization" => "Bearer token" })
+Butler.get("https://api.example.com/users", params: { page: 2, limit: 50 })
+```
+
+`Butler.get`/`.post`/`.put`/`.patch`/`.delete`/`.head`/`.options` all run
+against `Butler.default_client` — a real, connection-pooled
+`Butler::Client` built lazily on first use and shared for the life of the
+process, so repeated module-level calls still get pooling/retries/a
+circuit breaker rather than reconnecting from scratch every time. Reach
+for `Butler::Client.new` instead once you want configuration scoped to one
+API — a fixed `base_url`, its own retry policy, middleware — rather than
+sharing the one global default:
+
+```ruby
+client = Butler::Client.new(base_url: "https://api.example.com")
+
+response = client.get("/users")   # same Response API as Butler.get above
+response = client.post("/users", json: { name: "Ram", email: "ram@example.com" })
+client.get("/users", headers: { "Authorization" => "Bearer token" })
+client.get("/users", params: { page: 2, limit: 50 })
+```
+
+## Architecture, in one picture
+
+```
+Client
+  └─ Pipeline::Chain
+       ├─ SecurityMiddleware      (host allow/block list — before any socket is touched)
+       ├─ TelemetryMiddleware     (Instrumentation + optional OpenTelemetry span)
+       ├─ [any middleware you add via Client#use]
+       ├─ TimeoutMiddleware       (total-deadline checkpoint)
+       ├─ CircuitBreakerMiddleware
+       └─ RetryMiddleware         (the only middleware with a loop)
+            └─ ConnectionPool#acquire
+                 └─ Transport.current            (Transport::Async, or Testing::FakeTransport when stubbing)
+                      └─ Async::HTTP::Client      (HTTP/1.1 or HTTP/2 — chosen via ALPN)
+```
+
+Only `lib/butler/transport.rb` ever imports `Async::HTTP`/`Protocol::HTTP`.
+Everything above it is pure `Butler::Request`/`Butler::Response`/
+`Butler::Headers` — swap the transport later (a real HTTP/3 implementation,
+say) and nothing above this line changes. Full request lifecycle, the
+deadline model, and the redirect-handling design are in
+[docs/architecture.md](docs/architecture.md).
+
+## Usage
+
+### Module-level shortcuts
+
+```ruby
+Butler.get("https://api.example.com/users")
+Butler.post("https://api.example.com/users", json: { name: "Ram" })
+# put/patch/delete/head/options all work the same way
+
+Butler.async do |tasks|
+  a = tasks.async { Butler.get("https://api.example.com/a") }
+  b = tasks.async { Butler.get("https://api.example.com/b") }
+  [a.wait, b.wait]
+end
+```
+
+Every `Butler.<method>` call is `Butler.default_client.<method>` —
+`Butler.default_client` is a real `Butler::Client`, built lazily the first
+time any module-level call is made and memoized for the life of the
+process, so it keeps its own connection pool and circuit-breaker state
+across calls exactly like a `Client` you built yourself would, rather than
+reconnecting from scratch on every call the way a purely stateless
+`ClassName.get` API would have to.
+
+It snapshots `Butler.configuration` as of whenever it's first built — the
+same way `Butler::Client.new` always has:
+
+```ruby
+Butler.configure { |config| config.base_url = "https://api.example.com" }
+Butler.get("/users") # relative paths now work against that base_url
+```
+
+Call `Butler.configure` before your first module-level call. Reconfiguring
+afterward doesn't retroactively change the already-built default client —
+call `Butler.reset_default_client!` (closes its connections first) if you
+need a later configuration change to take effect, or just switch to
+`Butler::Client.new` once you're reaching for more than one or two
+settings.
+
+### Requests
+
+All of `get`, `post`, `put`, `patch`, `delete`, `head`, and `options` share
+the same signature: `client.method(path = nil, **options)`.
+
+```ruby
+client.get("/users")
+client.get("/users", params: { page: 2, limit: 50 })
+client.get("/users", headers: { "Authorization" => "Bearer token" })
+client.get("https://other-host.example.com/anything") # an absolute URL overrides base_url for one call
+client.get("/users", basic_auth: ["alice", "secret"])
+client.get("/users", basic_auth: { username: "alice", password: "secret" })
+client.get("/users", http_version: :http1) # force this one call onto HTTP/1.1
+```
+
+| Option | Description |
+| --- | --- |
+| `params:` | Hash merged into the URL's query string |
+| `headers:` | Hash of request headers (per-request headers override client-level defaults) |
+| `basic_auth:` | `[user, password]` or `{ username:, password: }` |
+| `idempotent:` | Marks a PUT/DELETE as safe to retry on a retryable status (POST is never auto-retried regardless) |
+| `deadline:` | Per-call total wall-clock budget in seconds, overriding the client default |
+| `stream:` | `true` to get back a `Butler::Stream` (see [Streaming](#streaming)) instead of a fully-buffered body |
+| `http_version:` | `:auto`, `:http1`, or `:http2` for this call only, overriding the client's `http_version` (see [Configuration reference](#configuration-reference)) — gets its own pooled connection per origin, kept separate from calls using the client default |
+
+### Bodies
+
+```ruby
+client.post("/users", json: { name: "Ram" })                     # application/json
+client.post("/users", form: { name: "Ram", role: "admin" })      # application/x-www-form-urlencoded
+client.post("/upload", body: File.open("report.csv"))            # streamed from the IO, chunk by chunk
+client.post("/upload", io: File.open("report.csv"))               # equivalent, more explicit
+client.post("/webhook", body: "raw string")
+client.post("/webhook", stream: some_enumerator_of_chunks)         # a caller-driven upload stream
+```
+
+### Streaming
+
+Request uploads and response bodies can both be streamed rather than fully
+buffered into memory:
+
+```ruby
+response = client.get("/export.csv", stream: true)
+response.stream.each_chunk { |chunk| output.write(chunk) } # closes the connection once fully consumed
+# or, if you do want it all in memory after all:
+response.body # reads the whole stream and buffers it
+```
+
+### Structured concurrency
+
+```ruby
+client.async do |tasks|
+  a = tasks.async { client.get("/a") }
+  b = tasks.async { client.get("/b") }
+  [a.wait, b.wait]
+end
+```
+
+`client.async` nests transparently: called from inside an already-running
+reactor (a nested `client.async`, or a Fiber-scheduler-based app server
+like Falcon), it just joins in on the current task — no new reactor, no
+new task, nothing to tear down. Called from ordinary synchronous code
+(the common case, and also what makes a bare `client.get(...)` — with no
+surrounding `async` block at all — just work), it's dispatched onto
+`Butler::Async.background`, a single reactor shared by every
+`Butler::Client` in the process and lazily started once on first use,
+rather than a fresh one being spun up and torn down for every call. Either
+way, exiting the block always resolves any child task the caller forgot to
+`.wait`, and cancels anything still running after an exception — an error
+raised inside one child task propagates out through `.wait` exactly like a
+normal exception would.
+
+Even with that shared background reactor, Butler's own request pipeline
+(security checks, retry/circuit-breaker bookkeeping, telemetry, building
+`Request`/`Response` objects) is real per-call **CPU** work beyond what a
+bare `Net::HTTP.get` does. Against any upstream with real network latency
+— the normal case — that extra work overlaps with I/O wait and a tight
+sequential loop of `client.get` calls lands close to `Net::HTTP`'s own
+loop in wall-clock time; it only shows up clearly against a near-zero-
+latency upstream or a CPU-bound host. See
+[benchmarks/README.md](benchmarks/README.md#comparisonrb) for real
+numbers either way.
+
+### Deadlines and timeouts
+
+```ruby
+client = Butler::Client.new(
+  base_url: "https://api.example.com",
+  connect_timeout: 2, read_timeout: 5, write_timeout: 5, # per-attempt budgets
+  deadline: 5, # total wall-clock budget for one call, across every retry/redirect
+)
+```
+
+`deadline:` is the total budget for one `client.get`/`client.post`/etc call
+— DNS, connect, TLS, every retry attempt, every redirect hop, all count
+against it, and **retries never reset it**. `connect_timeout` bounds
+establishing a connection; `read_timeout`/`write_timeout` (or an explicit
+`request_timeout` override) bound the request/response round-trip on an
+already-open connection — the larger of read/write becomes that per-attempt
+ceiling, since the underlying transport performs a request's write and its
+response's read as one call rather than timing each phase separately.
+Whichever of these is smaller wins for any given attempt: a generous
+`read_timeout` still gets cut short once `deadline:` is nearly exhausted.
+Exceeding either raises `Butler::Errors::TimeoutError`.
+
+### Retries
+
+```ruby
+client = Butler::Client.new(
+  retry: { max_attempts: 3, base_delay: 0.1, max_delay: 5.0, jitter: true },
+)
+
+client.put("/orders/42", json: { status: "shipped" }, idempotent: true) # opt in explicitly
+```
+
+- **GET/HEAD/OPTIONS** are retried automatically on a retryable status
+  (`408, 425, 429, 500, 502, 503, 504` by default) or a connection-level
+  failure (refused/reset connection, TLS failure, timeout) — nothing that
+  reached the server can be confirmed either way for those, so retrying a
+  network-level failure doesn't make the request any less safe. The one
+  deliberate exception: a **certificate verification failure**
+  (`Butler::Errors::CertificateVerificationError` — self-signed, expired,
+  hostname mismatch, untrusted root) is never retried, even though it's a
+  `TLSError` like the retried ones — a bad certificate won't become valid
+  a few hundred milliseconds later, so retrying just delays surfacing a
+  real problem instead of fixing anything.
+- **PUT/DELETE** are only retried on a retryable status when explicitly
+  marked `idempotent: true`.
+- **POST is never auto-retried on a 5xx status**, regardless of
+  `idempotent:` — matching how most systems reason about "did my write
+  actually happen." (Connection-level failures are still retried for POST
+  too, since the request demonstrably never reached the server.)
+- `Retry-After` (seconds or an HTTP-date) is honored ahead of the computed
+  exponential-backoff-with-jitter delay when the server sends one.
+- Exhausting every attempt raises `Butler::Errors::RetryExhausted`; running
+  out of `deadline:` instead raises `Butler::Errors::TimeoutError`.
+
+### Circuit breaker
+
+```ruby
+client = Butler::Client.new(
+  circuit_breaker: { enabled: true, scope: :host, failure_threshold: 5, recovery_timeout: 30 },
+)
+```
+
+A `CLOSED -> OPEN -> HALF_OPEN -> CLOSED/OPEN` state machine, scoped
+per-host by default (`scope: :client` shares one breaker across every host
+a client talks to instead). Opens after `failure_threshold` consecutive
+failures — a raised connection-level error, *or* a 5xx response returned
+normally (Butler doesn't raise on error responses unless
+`raise_on_error: true`, but the breaker still counts them) — stays open
+for `recovery_timeout` seconds, then allows exactly one probe request
+through; a successful probe closes it, a failed one reopens it. An open
+circuit raises `Butler::Errors::CircuitOpen` immediately, without
+attempting the network call at all.
+
+### Security
+
+```ruby
+client = Butler::Client.new(
+  security: {
+    verify_tls: true,                    # on by default — turning it off logs a loud warning
+    allowed_hosts: nil,                  # e.g. ["api.example.com"] to restrict to only those hosts
+    blocked_hosts: ["*.internal"],       # glob patterns
+    max_response_size: 50 * 1024 * 1024, # bytes
+    max_header_size: 64 * 1024,          # bytes
+    strip_credentials_on_redirect: true, # drop Authorization/Cookie crossing origin on a redirect
+  },
+)
+```
+
+The host allow/block list is SSRF-*lite* — a cheap first line of defense,
+not a substitute for application-level SSRF protection (the PRD this gem's
+design is based on calls this out explicitly: no HTTP client can fully
+solve application-level SSRF on its own).
+
+### Telemetry
+
+Standalone by default — no ActiveSupport required:
+
+```ruby
+Butler::Telemetry::Instrumentation.subscribe(:request) do |payload|
+  # payload is built from an explicit allow-list: method, host, port,
+  # status, duration, attempt, error — never request/response bodies or
+  # Authorization/Cookie/Set-Cookie headers.
+  StatsD.timing("http.request", payload[:duration] * 1000, tags: ["host:#{payload[:host]}"])
+end
+```
+
+If `opentelemetry-api` is already loaded by your application, Butler wraps
+each request in a real span (current OTel HTTP semantic conventions —
+`http.request.method`, `server.address`, `server.port`,
+`http.response.status_code`, `network.protocol.name/version`, `error.type`)
+automatically — nothing to configure. If ActiveSupport is loaded, the same
+`instrument(:request, ...)` call also fires as an
+`ActiveSupport::Notifications` event (`"butler.request"`), so a Rails app's
+existing log subscribers see it too.
+
+### Middleware
+
+```ruby
+class RequestIdMiddleware
+  def call(context, next_middleware)
+    context.request.headers["X-Request-Id"] = SecureRandom.uuid
+    next_middleware.call(context)
+  end
+end
+
+client.use(RequestIdMiddleware.new)
+```
+
+Runs between `TelemetryMiddleware` and the built-in
+`Timeout`/`CircuitBreaker`/`Retry` middlewares — third-party extensions can
+inspect, modify, short-circuit, observe, or transform a request without
+core resilience/security behavior ever needing to be expressed as
+middleware itself.
+
+### Testing — no WebMock/VCR needed
+
+```ruby
+Butler::Testing.stub("GET", "https://api.example.com/users/1", status: 200, json: { id: 1 })
+
+# or the builder form, path-relative to whatever base_url the client under test uses:
+Butler::Testing.stub_request(:get, "/users/1").to_return(status: 200, json: { id: 1 })
+Butler::Testing.stub_request(:get, "/flaky").to_raise(Butler::Errors::ConnectionError)
+
+# reset between tests, e.g. in an after(:each)/teardown hook — stubs are
+# process-wide, not scoped to one Client instance:
+Butler::Testing.reset!
+```
+
+Stubs are matched at the transport boundary (`Butler::Testing::FakeTransport`
+implements the exact same two-method contract as the real transport), so a
+stubbed response or a stubbed exception still flows through
+retry/circuit-breaker/telemetry exactly as a real one would — a stubbed 503
+genuinely exercises `RetryMiddleware`, not a shortcut around it.
+
+### Rails
+
+`require "butler"` works standalone — Rails is an integration, not a
+dependency (`Butler::Rails::Railtie` only loads if `defined?(Rails::Railtie)`).
+When Rails is present:
+
+- Butler's default structured-log-line output points at `Rails.logger`
+  instead of a bare `Logger.new($stdout)`, unless you've already set
+  `telemetry: { logger: ... }` yourself.
+- Pooled connections are reset after a Puma (or any `preload_app!` server)
+  fork via `ActiveSupport::ForkTracker`, so a forked worker never inherits
+  the parent process's live `Async::HTTP::Client`/reactor state.
+
+```ruby
+Butler.configure do |config|
+  config.base_url = ENV.fetch("PAYMENTS_API_URL")
+end
+```
+
+### Errors
+
+Every error Butler raises descends from `Butler::Errors::Error`:
+
+```
+Error
+├── ConfigurationError
+├── RequestError
+│   ├── TooManyRedirectsError
+│   └── HostNotAllowed
+├── TransportError
+│   ├── ConnectionError
+│   ├── TimeoutError
+│   ├── TLSError
+│   │   └── CertificateVerificationError  (never retried — see Retries above)
+│   ├── DNSFailure
+│   └── ProtocolError
+├── HTTPError            (only raised with raise_on_error: true; carries .response)
+│   ├── ClientError       (4xx)
+│   └── ServerError       (5xx)
+├── RetryExhausted
+├── CircuitOpen
+├── Cancelled
+└── LimitExceeded
+```
+
+`rescue Butler::Errors::Error` is always a safe top-level catch-all for
+"something about this HTTP call failed."
+
+## Configuration reference
+
+Set per-client (`Butler::Client.new(**options)`) or as a process-wide
+default every new client starts from (`Butler.configure { |c| ... }`):
+
+```ruby
+Butler.configure do |config|
+  config.connect_timeout = 5
+  config.retry.max_attempts = 3
+end
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `base_url` | `nil` | Prefixed onto every relative path |
+| `default_headers` / `headers:` | `{}` | Sent on every request; per-request `headers:` override matching keys |
+| `user_agent` | `"Butler/<version>"` | Sent unless a request already sets its own `User-Agent` |
+| `connect_timeout` | `5` | Seconds; passed straight through to the connection endpoint |
+| `read_timeout` / `write_timeout` | `10` / `10` | Seconds; the larger of the two becomes the per-attempt round-trip budget (see `request_timeout`) |
+| `request_timeout` | `nil` | Seconds; an explicit override of the per-attempt round-trip budget, taking priority over `read_timeout`/`write_timeout` |
+| `deadline` | `nil` (unbounded) | Total wall-clock seconds for one call, across every retry/redirect — always the final cap, however the per-attempt budget above was derived |
+| `follow_redirects` | `true` | |
+| `max_redirects` | `5` | |
+| `http_version` | `:auto` | `:auto` (ALPN-negotiated — offers both, HTTP/2 whenever the server supports it), `:http1`, or `:http2` (forced). Also settable per call: `client.get(path, http_version: :http1)` — see [Requests](#requests) |
+| `proxy` | `nil` | Proxy URL |
+| `raise_on_error` | `false` | Raise `ClientError`/`ServerError` on 4xx/5xx instead of returning the response |
+| `retry.max_attempts` | `2` | |
+| `retry.retryable_status_codes` | `[408,425,429,500,502,503,504]` | |
+| `retry.base_delay` / `retry.max_delay` | `0.1` / `5.0` | Seconds |
+| `retry.jitter` | `true` | Equal-jitter (delay scaled by a random factor in `[0.5, 1.0)`) |
+| `circuit_breaker.enabled` | `true` | |
+| `circuit_breaker.scope` | `:host` | or `:client`, to share one breaker across every host |
+| `circuit_breaker.failure_threshold` | `5` | |
+| `circuit_breaker.recovery_timeout` | `30` | Seconds before a half-open probe is allowed |
+| `circuit_breaker.max_tracked_hosts` | `256` | LRU-bounded so fanning out to many hosts can't grow this unboundedly |
+| `security.verify_tls` | `true` | |
+| `security.allowed_hosts` / `security.blocked_hosts` | `nil` / `[]` | Glob patterns |
+| `security.max_response_size` | `50 MiB` | Bytes |
+| `security.max_header_size` | `64 KiB` | Bytes |
+| `security.strip_credentials_on_redirect` | `true` | |
+| `pool.max_connections` | `100` | Distinct origins kept warm at once (LRU-evicted past this) |
+| `pool.idle_timeout` | `60` | Seconds a pooled connection may sit unused before it's rebuilt rather than reused |
+| `telemetry.enabled` | `true` | |
+| `telemetry.opentelemetry` | `:auto` | Spans are emitted automatically whenever `opentelemetry-api` is already loaded |
+| `telemetry.logger` | `nil` (falls back to `Logger.new($stdout)`, or `Rails.logger` under Rails) | |
+
+## Benchmarks
+
+```
+ruby benchmarks/sequential_vs_concurrent.rb   # Net::HTTP vs Butler, sequential vs concurrent
+ruby benchmarks/concurrency.rb                # how wall-clock time scales from 10 to 250 (configurable) concurrent requests
+ruby benchmarks/allocations.rb                # objects allocated per request
+ruby benchmarks/memory.rb                     # RSS growth over sustained use
+ruby benchmarks/comparison.rb                 # client × sequential/concurrent matrix, plus Faraday/Excon/HTTParty if installed
+SERVER_URL=https://localhost:9292 ruby benchmarks/http1_vs_http2.rb   # HTTP/1.1 pool vs HTTP/2 multiplexing
+```
+
+Full methodology, expected shapes, and how to read each script's output are
+in [benchmarks/README.md](benchmarks/README.md). Short version: every script
+except `http1_vs_http2.rb` runs against a local server with simulated,
+fixed per-request latency, specifically so what's measured is Butler's own
+overhead — not a particular network's variance on a particular day.
+**Run them yourself** before quoting any number externally; nothing here
+substitutes for load-testing your own upstream.
+
+## What's not here yet
+
+This is a substantial rearchitecture (see
+[docs/architecture.md](docs/architecture.md)), not the full roadmap from
+the design doc it's based on. Deliberately deferred: a full OpenTelemetry
+semantic-convention compliance audit, Sorbet RBI (RBS type signatures are
+included), a dedicated external security audit, and long-run
+(24h/1M-request) soak testing.
+
+**HTTP/3/QUIC** is early, internal-only groundwork — packet-level QUIC
+crypto (`lib/butler/quic/`), not a usable transport. There is no
+`http_version: :http3`, no `Transport::QUIC`, nothing reachable from
+`Butler::Client` at all yet; requesting HTTP/3 today still just gets you
+`:auto`'s existing HTTP/2-vs-HTTP/1.1 ALPN choice. See
+[docs/architecture.md](docs/architecture.md#http3-quic)
+for what exists, what doesn't, and the security posture of what's there
+(short version: hand-rolled, **not** security-audited, and — once it is
+wired up — never silently reachable via `:auto`, only via an explicit
+`http_version: :http3`).
+
+## Development
+
+After checking out the repo, run `bin/setup` to install dependencies (or
+just `bundle install`). Run `rake test` to run the test suite — most of it
+spins up a real local TCP server rather than mocking anything, so pooling,
+retries, redirects, and timeouts are exercised against actual socket
+behavior, not stubbed-out doubles. `bin/console` starts an IRB session with
+Butler already loaded.
+
+## Contributing
+
+Bug reports and pull requests are welcome at
+https://github.com/ramlaxmanyadav/butler-http.
+
+## License
+
+The gem is available as open source under the terms of the
+[MIT License](https://opensource.org/licenses/MIT).
+
+---
+
+# docs/architecture.md
+
+# Butler architecture
+
+## Layering
+
+```
+Client
+  -> Pipeline::Chain (Security -> Telemetry -> [custom] -> Timeout -> CircuitBreaker -> Retry)
+    -> ConnectionPool#acquire
+      -> Transport.current (Transport::Async, or Testing::FakeTransport when stubbing is active)
+        -> Async::HTTP::Client (HTTP/1.1 or HTTP/2, chosen via ALPN)
+```
+
+Only `lib/butler/transport.rb` ever touches `Async::HTTP`/`Protocol::HTTP` types.
+Everything above it deals exclusively in `Butler::Request`/`Butler::Response`/
+`Butler::Headers` — this is what P2 in the PRD calls "transport
+independence": swapping the transport later (a real HTTP/3 implementation,
+say) means writing a new module with the same two class methods
+(`.build_connection`, `.call`) and nothing above it changes.
+
+`Butler.get`/`.post`/etc (`lib/butler.rb`) sit one layer above `Client` —
+they're a thin `Client::HTTP_METHODS.each { |m| define_method(m) { ... } }`
+loop delegating to `Butler.default_client`, a lazily-built, memoized
+`Butler::Client` shared for the process's lifetime. Nothing about `Client`
+itself changes to support this; it's purely a convenience layer on top.
+
+## Request lifecycle
+
+For one `client.get("/users")` call:
+
+1. `Client#request` decides where `#perform_request` actually runs: inline
+   on the current task if `Async::Task.current?` is already true (a nested
+   `client.async` call, or a Fiber-scheduler-based app server like Falcon),
+   or dispatched onto `Butler::Async.background` otherwise — a single
+   reactor shared by every `Butler::Client` in the process, lazily started
+   on first use rather than a fresh one being spun up and torn down per
+   call. Either way this is what lets a bare synchronous `client.get(...)`
+   just work, and `#perform_request` itself doesn't know or care which
+   path got it there.
+2. `#perform_request` builds a `Butler::Request` (method, resolved
+   `Butler::URI`, `Butler::Headers`, optional `Butler::Body`) and a
+   `Resilience::Deadline` (unbounded unless `deadline:` was given).
+3. `Pipeline::Chain#call` runs the middlewares in order:
+   - `SecurityMiddleware` — `HostPolicy.check!`, before any socket is touched.
+   - `TelemetryMiddleware` — wraps the rest in `Instrumentation.instrument`
+     (+ a real OpenTelemetry span, if loaded).
+   - *(any middleware added via `Client#use` runs here)*
+   - `TimeoutMiddleware` — the total-deadline checkpoint.
+   - `CircuitBreakerMiddleware` — short-circuits with `Errors::CircuitOpen`
+     if the breaker for this scope (host, by default) is open.
+   - `RetryMiddleware` — the only middleware with a loop; retries a raised
+     `TransportError` or a retryable-status response per
+     `Resilience::RetryPolicy`.
+4. The terminal step: `ConnectionPool#acquire(uri, config)` returns a
+   memoized `Butler::Connection` for this origin — `config` here is
+   whatever `Client#per_call_config` produced: the shared client
+   `configuration` as-is, or a one-off dup with `http_version:` swapped in
+   if this particular call passed that option, so it lands in
+   `ConnectionPool`'s fingerprint (see below) and gets pooled separately
+   from calls using the client's own default. Then
+   `Transport.current.call(connection, request, config, timeout: attempt_timeout(config, deadline))`
+   performs the actual request — `attempt_timeout` is `request_timeout` if
+   set, else the larger of `read_timeout`/`write_timeout`, always further
+   capped by however much of the total deadline remains (see
+   "Deadline vs per-stage timeouts" below).
+5. Back in `#perform_request`: if the response is a redirect and
+   `follow_redirects` is on, a **new** `Butler::Request`/`Pipeline::Context`
+   is built for the redirect target and steps 3–4 repeat — but the same
+   `Deadline` object is reused across every hop and every retry attempt
+   within a hop. Retries and redirects never reset the total budget.
+
+## Why ConnectionPool isn't a socket pool
+
+The previous (`Net::HTTP`-based) implementation needed its own
+checkout/checkin socket pool because `Net::HTTP` doesn't do that itself.
+`Async::HTTP::Client` already pools connections per origin and multiplexes
+HTTP/2 streams internally. So `Butler::ConnectionPool` is just a small,
+bounded (LRU-evicted) registry mapping a fingerprint — origin plus
+`proxy`/`http_version`/`security.verify_tls`/whether stubbing is active —
+to one memoized `Async::HTTP::Client`. `http_version` is part of that
+fingerprint specifically because it's decided at ALPN/TLS-handshake time,
+before any bytes of the actual request go out — a connection that
+negotiated `:http2` can't serve an `:http1`-pinned call or vice versa, so
+each combination gets pooled separately rather than one call's
+`http_version:` override silently reusing (or evicting) a connection
+built for the other. Reusing a pooled connection across requests avoids
+re-paying DNS/TCP/TLS setup, and `Async::HTTP::Client` itself handles what
+happens underneath that (protocol selection, multiplexing, its own
+socket-level reuse).
+
+`Async::HTTP::Client`'s own built-in retry is disabled (`retries: 0`) so
+`Resilience::RetryPolicy` is the single source of truth — otherwise a
+request could be silently retried twice (once inside async-http, once
+inside Butler's pipeline), throwing off the deadline accounting.
+
+## Why bare calls don't pay reactor setup per call
+
+`Async { ... }.wait` — spin up a reactor, run the block, tear it down — is
+the obvious way to make one async-native call look synchronous, and it's
+what earlier versions of `Client#request`/`#async` did. It's also real,
+measurable overhead (event loop + I/O selector + Fiber scheduler
+registration, then all of it torn down again) paid on *every single* bare
+call, which matters a lot for a tight sequential loop of `client.get`
+calls and not at all for one-off calls.
+
+`Butler::Async.background` (`lib/butler/async.rb`) fixes this: one
+`Async::Reactor`, running in one dedicated background `Thread`, lazily
+started on first use and shared by every `Butler::Client` in the process
+for the lifetime of the process. `Client#request`/`#async` check
+`Async::Task.current?` first — already inside a reactor (a nested
+`client.async`, or a Fiber-scheduler-based app server), they just run
+inline on the current task, no dispatch at all. Otherwise, the work is
+handed to `BackgroundReactor#call`, which pushes it onto a plain
+`Thread::Queue` the background reactor's own loop is popping from, spawns
+it there as a child task, and blocks the *calling* thread (an ordinary OS
+thread — Puma worker, Rake task, anything) on a second `Queue` until that
+child task's result or exception comes back. `Queue#pop` is
+Fiber-scheduler-aware, so the reactor's own loop yields to other pending
+work while waiting for the next job rather than blocking its thread.
+
+This is invisible from the outside — `client.get` still looks and behaves
+like an ordinary synchronous method — and it's also why neither dispatch
+path ever trips `async`'s "Task may have ended with unhandled exception"
+diagnostic logging for a routinely-handled Butler error: the inline path
+never opens a new task boundary for the exception to cross, and
+`BackgroundReactor#call`'s job wrapper always catches (`rescue Exception`,
+deliberately broader than `StandardError` — otherwise a caught-nowhere
+exception there would leave the calling thread blocked on its `Queue`
+forever) and re-raises back on the calling thread afterward, so the
+exception never escapes the reactor's own task uncaught either.
+
+Ruby `Thread` objects don't survive `fork()` — only the forking thread
+does — so `Butler.reset_connections!` (called automatically post-fork by
+`Butler::Rails::Railtie`) also resets the background reactor, and
+`BackgroundReactor#call` itself checks the current pid on every dispatch
+as a defensive fallback for processes that fork without going through
+Rails' hook.
+
+## Deadline vs per-stage timeouts
+
+Three different things, all configurable:
+
+- `connect_timeout` bounds establishing a connection — handed straight to
+  `Async::HTTP::Endpoint.parse(..., timeout: config.connect_timeout)`.
+- `read_timeout`/`write_timeout` (or an explicit `request_timeout`, which
+  takes priority over both) bound the request/response round-trip on an
+  already-open connection. `Client#attempt_timeout` computes this as
+  `request_timeout || [read_timeout, write_timeout].max` — the two aren't
+  timed independently, since `Async::HTTP::Client` performs a request's
+  write and its response's read as one call, not two separately-timeable
+  phases.
+- `deadline:` is a **total wall-clock budget for the whole `Client#request`
+  call** — DNS, connect, TLS, every retry attempt, every redirect hop, all
+  count against it. It's created once (`Resilience::Deadline.start`) and
+  threaded through every `Pipeline::Context` for that call; nothing is ever
+  allowed to reset it.
+
+Every actual attempt is bounded by `[attempt_timeout, deadline.remaining].min`
+(computed in `Client#build_pipeline`'s terminal step and enforced via
+`Resilience::Timeout.enforce`, i.e. `Async::Task#with_timeout`) — so a
+generous `read_timeout` still gets cut short once the total deadline is
+nearly spent, but the total deadline can never be exceeded via the
+per-attempt timeout adding extra time on top of it.
+
+`pool.idle_timeout` is a fourth, unrelated timeout: how long a cached
+`Butler::Connection` may sit unused in `ConnectionPool` before `#acquire`
+closes it and builds a fresh one instead of handing back a possibly-stale
+one, rather than an attempt- or call-level budget.
+
+## Testing without a real socket
+
+`Butler::Testing::StubRegistry.active?` is checked at the *start of every
+request* (via `Butler::Transport.current`), not once when a `Client` is
+constructed — so activating a stub in a test's `setup` after a
+long-lived `Client` already exists still takes effect on its very next
+request. When active, both `ConnectionPool#acquire` and the pipeline's
+terminal step route to `Testing::FakeTransport` instead of `Transport::Async`
+— it implements the exact same two-method contract, so a stubbed response
+or a stubbed exception still flows through `RetryMiddleware`/
+`CircuitBreakerMiddleware`/`TelemetryMiddleware` exactly like a real one
+would.
+
+## HTTP/3 (QUIC)
+
+`lib/butler/quic/` is early, foundational groundwork for a hand-rolled
+HTTP/3 client — hand-rolled because the only real Ruby HTTP/3 library
+(`quicsilver`) is a 6-month-old, single-maintainer, 2-star C extension,
+and that wasn't a foundation worth building Butler's HTTP/3 support on.
+**None of this is
+reachable from the public API yet.** `Transport.current` has no QUIC
+branch, there is no `Transport::QUIC`, no `http_version: :http3`, and
+`ConnectionPool`/`Client` don't know this code exists. Requesting HTTP/3
+today changes nothing — `:auto` still only chooses between HTTP/2 and
+HTTP/1.1 via ALPN, exactly as before.
+
+### What exists
+
+Packet-level QUIC crypto only, each piece verified against RFC 9000/9001's
+own published test vectors (not just "looks right" — see the RFC section
+comment at the top of each test file):
+
+- `quic/varint.rb` — RFC 9000 §16 variable-length integers.
+- `quic/crypto/hkdf.rb`, `key_schedule.rb` — HKDF + TLS 1.3's
+  HKDF-Expand-Label, and QUIC-TLS's Initial secret derivation (RFC 9001
+  §5.2) — the one part of QUIC-TLS with literal published test vectors,
+  since Initial secrets come from a fixed public salt, not a real
+  handshake.
+- `quic/crypto/aead.rb`, `header_protection.rb` — packet protection (RFC
+  9001 §5.3-5.4): AES-128/256-GCM and ChaCha20-Poly1305 AEAD, plus
+  AES-ECB/ChaCha20 header protection, both cross-checked against RFC 9001
+  Appendix A's full Client/Server Initial packets byte-for-byte.
+  `decode_packet_number` in `packet.rb` also implements RFC 9000 Appendix
+  A's packet-number decompression (needed even for this stage — one of
+  the RFC's own vectors has a packet number too large to round-trip
+  without it).
+- `quic/packet.rb` — `Packet.protect`/`#unprotect`: the two operations
+  tying the above together for one packet. Building the *plaintext*
+  header itself (dcid/scid/token, the Length field) for a packet Butler
+  is about to send, and everything above one packet — the QUIC connection
+  state machine, loss detection, HTTP/3 framing, QPACK — doesn't exist
+  yet.
+
+`benchmarks/quic_packet_protection.rb` measures this layer's raw
+throughput (no socket involved) — see `benchmarks/README.md`.
+
+### Cryptographic-primitive boundary
+
+Raw primitives (AES-GCM/ChaCha20-Poly1305 AEAD, HKDF, HMAC) are never
+hand-implemented — they come from Ruby's `openssl` stdlib gem, the same
+way every real QUIC implementation (`quiche`, `ngtcp2`, `quinn`) uses
+BoringSSL/rustls for primitives rather than writing their own AES. What's
+hand-rolled here is the *protocol* on top: QUIC's packet/frame framing and
+key-schedule assembly, not the block ciphers or hash functions themselves.
+
+### Security posture — read this before touching `Butler::Quic` directly
+
+- **Not security-audited.** This is unaudited, hand-rolled protocol code.
+  It's verified against RFC test vectors (strong evidence the crypto math
+  is *correct*), which is a different bar from *secure against a hostile
+  peer* — the two subsequent stages (a real TLS 1.3 handshake, a full
+  connection state machine) haven't been built or reviewed, and even this
+  stage hasn't had a dedicated security review.
+- **Opt-in only, by design, once it exists.** Confirmed as a deliberate
+  choice before any of this was written: when eventually wired into
+  `Transport.current`, `http_version: :auto` will **not** start silently
+  trying HTTP/3 just because a server advertises it. HTTP/3 will only
+  ever activate via an explicit `http_version: :http3` on a client or a
+  single call — nobody's existing `:auto` traffic gets silently routed
+  through new protocol code they didn't ask for by name.
+- **Untrusted input is already being taken seriously.** `Packet.unprotect`
+  processes raw bytes straight off the wire — attacker-controlled, or
+  just a datagram truncated/corrupted in transit — and originally didn't
+  validate length before slicing into it: a 5-byte or empty "packet"
+  reached OpenSSL with a `nil` or too-short buffer and crashed with a raw
+  `TypeError` or an unwrapped `OpenSSL::Cipher::CipherError`, neither of
+  which is a `Butler::Errors` type, so nothing upstream could tell
+  "malformed packet, drop it" apart from "the reactor task just died."
+  Fixed: `Packet.unprotect` now validates buffer length *before* any
+  byteslice/cipher call, raising `Butler::Errors::ProtocolError` (already
+  the class `RetryPolicy` treats as retry-eligible — exactly right for
+  "this packet got mangled in transit"); `Crypto::AEAD.open` has the same
+  guard independently, since it's a public entry point callable without
+  going through `Packet.unprotect` at all. Cost of the guard: measured at
+  ~77ns/call against ~7-9µs/call of real AEAD work — smaller than normal
+  run-to-run benchmark jitter, i.e. free. See
+  `test/butler/quic/packet_test.rb`'s `PacketMalformedInputTest` for the
+  regression coverage, and `benchmarks/quic_packet_protection.rb`'s
+  trailing note for the measurement.
+
+## Deliberately out of scope for this pass
+
+A working HTTP/3/QUIC *transport* (see above — packet-level crypto exists,
+everything above one packet doesn't), a full OpenTelemetry
+semantic-convention compliance audit, Sorbet RBI, a dedicated external
+security audit, and long-run (24h / 1M-request) soak testing. See the
+PRD's own staged rollout (v0.1 → v1.0) for what a follow-up pass would
+cover.
+
+---
+
+# benchmarks/README.md
+
+# Butler benchmarks
+
+Seven scripts, each isolating one question. None of them are a substitute
+for load-testing *your* actual upstream — they run against a local server
+with simulated latency specifically so what's being measured is Butler's
+own overhead (connection setup, concurrency model, allocations, memory),
+not network variance that would differ from one run to the next (the one
+exception is `quic_packet_protection.rb`, which never touches a socket at
+all — see its own section). Numbers below are illustrative shapes, not
+committed guarantees — run these yourself on your own hardware and Ruby
+version before trusting any of it.
+
+Run any script with no arguments to use its defaults, or pass the
+documented arguments to change request count / concurrency / simulated
+latency. All of them require `bundle install` first (they load `../lib/butler`
+directly, so no need to `gem install butler-http`).
+
+| Script | Question it answers |
+| --- | --- |
+| `sequential_vs_concurrent.rb` | Net::HTTP vs Butler, sequential vs concurrent — the PRD's original "major benchmark" |
+| `concurrency.rb` | How does wall-clock time scale as concurrency goes from 10 to 250 (configurable)? |
+| `allocations.rb` | Objects allocated per request |
+| `memory.rb` | Does RSS grow proportionally to request count, or level off? |
+| `http1_vs_http2.rb` | 1000 concurrent requests over pooled HTTP/1.1 connections vs one multiplexed HTTP/2 connection |
+| `comparison.rb` | A client × access-pattern matrix — Net::HTTP/Butler plus Faraday/Excon/HTTParty if installed |
+| `quic_packet_protection.rb` | Raw throughput of `Butler::Quic::Packet.protect`/`#unprotect` — no socket, no server |
+
+## `sequential_vs_concurrent.rb`
+
+```
+ruby benchmarks/sequential_vs_concurrent.rb [request_count=200] [server_delay_seconds=0.01]
+```
+
+Four rows: `Net::HTTP` sequential (one reused connection), `Net::HTTP`
+one-Thread-per-request, `Butler` sequential (`client.get` in a loop), and
+`Butler` concurrent (`client.async`). The sequential rows are there as a
+baseline, not a competition — a client library's sequential throughput is
+mostly bounded by the server's per-request latency, which is why the
+interesting comparison is `Net::HTTP threads` vs `Butler client.async`:
+both achieve concurrency, but one does it with OS threads and one with
+Fibers.
+
+**What to expect:** with `server_delay_seconds` set (the default, 0.01s),
+both concurrent rows should land close to `request_count / concurrency_achieved
+* server_delay`, dramatically faster than either sequential row — the
+simulated latency is what makes concurrency pay off at all. Needs the
+`webrick` gem (`gem install webrick`; no longer bundled by default on
+modern Ruby).
+
+**A real characteristic worth knowing about `Butler sequential`:** a bare
+`client.get` with no surrounding `client.async` block is dispatched onto a
+single background reactor shared by every `Butler::Client` in the process
+(`Butler::Async.background` — see
+[docs/architecture.md](../docs/architecture.md#why-bare-calls-dont-pay-reactor-setup-per-call)),
+lazily started once rather than a fresh reactor being spun up and torn
+down on every call. That fix closes almost all of the wall-clock gap
+against `Net::HTTP sequential` you'd have seen from an earlier version of
+this benchmark — at the default 0.01s simulated latency the two are
+essentially tied in *real* time below, both dominated by
+`request_count * server_delay_seconds` of unavoidable wait.
+
+What doesn't disappear is genuine **CPU** time: Butler's pipeline (security
+checks, retry/circuit-breaker bookkeeping, telemetry, building
+`Request`/`Response` objects) does more per-call work than a bare
+`Net::HTTP.get`, visible in the `user`/`system` columns below even where
+`real` time is a wash. That gap only shows up in *wall-clock* terms against
+a very low-latency upstream, or a CPU-bound host — run this with
+`server_delay_seconds=0` to see it clearly (roughly 1.5x slower real time
+at zero simulated latency in testing here). Against any upstream with real
+network latency, which is the normal case, it's noise.
+
+Example output from one run (Ruby 3.4.5, Apple Silicon):
+
+200 requests, 0.01s simulated latency (the realistic case — note `real`
+time is now a virtual tie):
+
+```
+                                   user     system      total        real
+Net::HTTP sequential           0.138222   0.091464   0.229686 (  2.624290)
+Net::HTTP threads              0.100865   0.069416   0.170281 (  0.150920)
+Butler sequential              0.170888   0.092166   0.263054 (  2.601575)
+Butler client.async            0.064519   0.036451   0.100970 (  0.096171)
+```
+
+300 requests, 0s simulated latency (isolates pure CPU/pipeline overhead —
+this is where the remaining gap actually lives):
+
+```
+                                   user     system      total        real
+Net::HTTP sequential           0.062507   0.027820   0.090327 (  0.087350)
+Net::HTTP threads              0.129407   0.086901   0.216308 (  0.179345)
+Butler sequential              0.091053   0.037124   0.128177 (  0.139776)
+Butler client.async            0.085149   0.038911   0.124060 (  0.109154)
+```
+
+## `concurrency.rb`
+
+```
+ruby benchmarks/concurrency.rb [server_delay_seconds=0.02] [max_concurrency=250]
+```
+
+Sweeps concurrency from 10 up to `max_concurrency` (10/50/100/250/500/1000,
+whichever are `<= max_concurrency`), reporting `Net::HTTP` threads vs
+`Butler client.async` wall-clock time at each level. The interesting part
+isn't either column alone — it's how the *gap* between them changes as
+concurrency grows. At low concurrency (10–50) they should look similar;
+Fiber scheduling overhead is small enough not to matter yet.
+Thread-per-request carries real OS costs (stack allocation,
+context-switching, GVL contention under MRI) that don't apply to Fibers,
+which becomes more visible at higher levels.
+
+**Defaults to a max of 250, not the PRD's 1000**, and each level's failure
+is caught and reported rather than crashing the script: in testing here,
+WEBrick itself (a single-threaded accept loop, one OS thread per
+connection — a fine stand-in server, but not built for this) became the
+bottleneck well before Butler did, especially once a round had already
+spun up hundreds of raw `Net::HTTP` threads for the comparison column
+immediately before measuring Butler at the same level. That's a statement
+about WEBrick as a *local test harness*, not about Butler's own ceiling —
+pass a higher `max_concurrency` if your machine (and whatever server
+you're actually pointed at) handles it, and expect an occasional "test
+server couldn't keep up" line instead of a crash if it doesn't.
+
+Example output (Ruby 3.4.5, Apple Silicon, defaults):
+
+```
+concurrency     Net::HTTP (s)       Butler (s)
+-----------     -------------       ----------
+10                      0.018            0.022
+50                      0.053            0.048
+100                     0.079            0.070
+250                     0.134            0.105
+```
+
+## `allocations.rb`
+
+```
+ruby benchmarks/allocations.rb [request_count=500]
+```
+
+Total objects allocated (via `GC.stat[:total_allocated_objects]`, not an
+external profiler gem) for the same request count across `Net::HTTP`
+sequential, `Butler` sequential, and `Butler client.async`. Expect Butler to
+allocate *more* per request than a bare `Net::HTTP.get` — it's doing more
+per request (building a `Butler::Request`/`Response`, running it through a
+5-stage middleware pipeline, Fiber/Task bookkeeping) in exchange for
+HTTP/2 multiplexing, retries, a circuit breaker, and telemetry that a bare
+`Net::HTTP.get` doesn't give you at all. The number to watch across Butler
+releases is *relative* — whether a future change measurably increases
+per-request allocations, not whether it beats `Net::HTTP` in isolation.
+
+Example output (Ruby 3.4.5, Apple Silicon, 300 requests):
+
+```
+Net::HTTP sequential           160944 objects total  (536.5 / request)
+Butler sequential              168441 objects total  (561.5 / request)
+Butler client.async            170248 objects total  (567.5 / request)
+```
+
+## `memory.rb`
+
+```
+ruby benchmarks/memory.rb [request_count=2000]
+```
+
+Reads RSS via `ps -o rss=` (portable across macOS/Linux, no
+platform-specific gem) before any requests, after `request_count`
+sequential requests, and after `request_count` more via `client.async` —
+all against the *same* `Butler::Client` instance, so this is really
+checking "does the connection pool/circuit breaker/instrumentation
+bookkeeping grow unboundedly under sustained use," not measuring one-time
+startup cost. **What to expect:** a fixed, one-time bump after the first
+batch (connection pool warm-up, Ruby's own allocator arenas expanding) and
+then roughly flat growth after that — if RSS keeps climbing
+request-proportionally in the second and third phases, that's the signal
+worth investigating, not the absolute KB numbers themselves.
+
+Example output (Ruby 3.4.5, Apple Silicon, 500 requests per phase):
+
+```
+RSS before any requests                         35760 KB
+RSS after sequential requests                   42592 KB  (+6832 KB)
+RSS after concurrent (client.async)             55728 KB  (+13136 KB)
+```
+
+## `http1_vs_http2.rb`
+
+```
+SERVER_URL=https://localhost:9292 ruby benchmarks/http1_vs_http2.rb [concurrency=1000]
+```
+
+The PRD's "killer benchmark" (section 22, v0.3): N concurrent logical
+requests over a small fixed pool of HTTP/1.1 connections vs. multiplexed
+over a single HTTP/2 connection. Needs a real TLS endpoint you control that
+negotiates both protocols via ALPN (a local Falcon or `puma-dev` server,
+for example) — there's no local fake-server shortcut here, since the whole
+point is real ALPN negotiation and real HTTP/2 framing. **What to expect:**
+HTTP/2 pulling ahead as `concurrency` increases past the HTTP/1.1 pool's
+`max_connections`, since HTTP/1.1 requests queue for a free connection
+while HTTP/2 requests share streams on the one connection; at low
+concurrency (well under `max_connections`) they should be close.
+
+## `comparison.rb`
+
+```
+ruby benchmarks/comparison.rb [request_count=200] [server_delay_seconds=0.01]
+```
+
+A full matrix: one row per client, two columns per row — **Sequential**
+(`request_count` calls in a loop, one reused connection where the client
+supports that) and **Concurrent** (`request_count` done at once: threads
+for every client except Butler, which uses `client.async` — that asymmetry
+is the point of the comparison, not something to hide by forcing everyone
+onto threads). `Net::HTTP` and `Butler` always run; `Faraday`, `Excon`, and
+`HTTParty` are added automatically if installed
+(`gem install faraday excon httparty`), each skipped with a note if not —
+so this always runs standalone, and grows into the fuller "Butler vs the
+ecosystem" comparison from the README's positioning table as those gems
+become available. `HTTParty` has no persistent-connection concept in its
+plain module-level `.get` — both its columns open a fresh connection per
+call, same as `Net::HTTP`'s and `Faraday`'s concurrent columns do (a
+connection object generally isn't meant to be shared across threads,
+so those measure a fresh one per thread rather than one shared instance).
+
+**What to expect:** the Sequential column mostly reflects
+`request_count * server_delay_seconds` regardless of client — a loop
+making one request at a time is bounded by the server's per-request
+latency, not by which client is doing the asking. The Concurrent column is
+where clients actually differ: expect it to land close to
+`server_delay_seconds` for every client (all of them achieve real
+concurrency here, just via different mechanisms — OS threads for everyone
+but Butler, Fibers for Butler).
+
+Example output (Ruby 3.4.5, Apple Silicon, 100 requests, 0.005s simulated
+latency, all three optional gems installed):
+
+```
+Client      Sequential (s)   Concurrent (s)
+---------   --------------   --------------
+Net::HTTP            0.694            0.085
+Butler               0.691            0.052
+Faraday              0.756            0.072
+Excon                0.702            0.100
+HTTParty             0.740            0.073
+```
+
+Butler's Sequential column landing at or ahead of `Net::HTTP` here (rather
+than measurably behind, as an earlier version of this benchmark showed) is
+downstream of the same background-reactor fix described under
+`sequential_vs_concurrent.rb` above.
+
+## `quic_packet_protection.rb`
+
+```
+ruby benchmarks/quic_packet_protection.rb [iterations=100000]
+```
+
+Not part of the HTTP/1.1-vs-HTTP/2 client picture above — this measures
+the QUIC/HTTP3 packet-protection primitives (`Butler::Quic::Packet.protect`/
+`#unprotect`, see `docs/architecture.md`'s HTTP/3 plan), the layer Stage
+5's future connection loop will call on every single packet sent and
+received once it exists. Four rows: protect/unprotect crossed with
+AES-128-GCM and ChaCha20-Poly1305, all against real RFC 9001 Appendix A.1
+key material and a synthetic ~1.16KB payload (sized like a real padded
+Initial packet's ClientHello — AEAD/header-protection cost scales with
+payload size, not its content, so a synthetic buffer is representative).
+No server, no socket, nothing network-shaped — expect near-zero run-to-run
+variance compared to the other scripts here.
+
+Example output (Ruby 3.4.5, Apple Silicon):
+
+```
+100000 iterations per row
+
+protect (AES-128-GCM)                100000 calls     6.802 us/call      147012 calls/sec
+unprotect (AES-128-GCM)              100000 calls     7.682 us/call      130181 calls/sec
+protect (ChaCha20-Poly1305)          100000 calls     7.836 us/call      127609 calls/sec
+unprotect (ChaCha20-Poly1305)        100000 calls     8.875 us/call      112676 calls/sec
+```
+
+**What to expect:** `unprotect` costing more than `protect` is real, not
+noise — decryption verifies the AEAD tag (an extra pass GCM/Poly1305 does
+that plain encryption doesn't) on top of the same header-protection work.
+ChaCha20-Poly1305 costing more than AES-128-GCM here is a property of this
+machine, not a general result — AES-GCM benefits from hardware AES-NI
+instructions that ChaCha20 has no equivalent for, so the gap (and which
+one wins) will vary by CPU.
+
+`#unprotect`'s malformed-packet length guard (any truncated or
+attacker-sent datagram now raises `Butler::Errors::ProtocolError` instead
+of crashing on a raw `TypeError`/`OpenSSL::Cipher::CipherError` — see the
+"hand-rolled HTTP/3 (QUIC) support" plan) isn't broken out as its own row:
+measured in isolation (100k calls with the guard vs. the same logic with
+it removed, after warmup) the difference was ~77 nanoseconds per call —
+*smaller* than the ~60ns of run-to-run jitter the benchmark itself shows
+between repeated runs with no code change at all. Two integer comparisons
+ahead of a real AES-GCM/AES-ECB pass just don't register.
+
+## Why local + simulated latency, not a real upstream
+
+Pointing these at a real third-party API would make every number mostly a
+measurement of that API's variance and your network path that day, not of
+Butler. Running against localhost with an explicit, fixed `server_delay`
+isolates the one variable each script is actually trying to measure. If you
+want to validate Butler's behavior against your *actual* production
+upstream's latency/error characteristics, that's a job for a staging-
+environment load test, not these scripts.

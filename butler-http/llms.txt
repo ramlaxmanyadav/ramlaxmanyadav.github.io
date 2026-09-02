@@ -1,0 +1,89 @@
+# Butler — Fiber-Native HTTP Client for Ruby
+
+> Butler is a Ruby HTTP client designed around modern Fiber-based concurrency — not a thin wrapper
+> around the `async`/`async-http` gems it's built on. It owns its own public API
+> (`Client`/`Request`/`Response`/`Headers`) in front of real HTTP/1.1 **and** HTTP/2 (transparent ALPN
+> negotiation, multiplexed connection pooling), structured concurrency (`client.async { |tasks| ... }`,
+> backed by an `Async::Barrier` for real parent/child cancellation), and a resilience layer (timeouts,
+> a total-budget deadline that survives every retry/redirect, retries with exponential backoff and
+> jitter, a CLOSED/OPEN/HALF_OPEN circuit breaker) built in rather than assembled from four extra gems.
+
+Security-conscious defaults: TLS/hostname verification on by default, certificate-verification
+failures raised as their own error type and never retried (a bad certificate won't become valid on the
+next attempt), a host allow/block list, response/header size limits, and credential stripping on
+cross-origin redirects. Standalone instrumentation with optional OpenTelemetry and Rails/
+ActiveSupport::Notifications bridges. Native request stubbing with no WebMock/VCR dependency.
+
+## Getting started
+
+- [README](https://github.com/ramlaxmanyadav/butler-http/blob/main/README.md): the pitch, quick start,
+  full usage reference, and configuration options.
+- [llms-full.txt](https://ramlaxmanyadav.github.io/butler-http/llms-full.txt): this file plus the
+  complete content of the README, the architecture docs, and the benchmarks README, concatenated into
+  one fetch — for agents that prefer a single request over following links.
+- [gemspec](https://github.com/ramlaxmanyadav/butler-http/blob/main/butler-http.gemspec): gem metadata,
+  version, and dependency floors.
+
+## Documentation
+
+- [Architecture](https://github.com/ramlaxmanyadav/butler-http/blob/main/docs/architecture.md):
+  request lifecycle, the middleware pipeline order, why `ConnectionPool` isn't a socket pool, the
+  background-reactor design that makes bare synchronous calls not pay per-call reactor setup, the
+  deadline-vs-per-stage-timeout model, and the HTTP/3 (QUIC) foundational work in progress (packet-level
+  crypto only so far — not reachable from the public API yet).
+- [Benchmarks](https://github.com/ramlaxmanyadav/butler-http/blob/main/benchmarks/README.md): seven
+  scripts covering sequential vs. concurrent, HTTP/1.1 vs. HTTP/2, allocations, memory, and a
+  Butler/Net::HTTP/Faraday/Excon/HTTParty comparison matrix — real measured numbers, not claims.
+
+## Guides
+
+- [Fiber-based concurrency in Ruby, explained](https://ramlaxmanyadav.github.io/butler-http/fiber-based-concurrency-in-ruby.html):
+  what `Fiber::Scheduler` actually is, thread-per-request vs. Fiber-per-request, and why it fits
+  I/O-bound HTTP work specifically.
+- [HTTP/2 multiplexing vs. HTTP/1.1 connection pooling](https://ramlaxmanyadav.github.io/butler-http/http2-multiplexing-vs-http1-pooling.html):
+  the conceptual difference, and what it actually buys you under real concurrency.
+- [Building resilient HTTP clients: timeouts, deadlines, retries, and circuit breakers](https://ramlaxmanyadav.github.io/butler-http/resilient-http-clients-timeouts-retries-circuit-breakers.html):
+  the concepts, and where a naive implementation of each one quietly goes wrong.
+- [Choosing a Ruby HTTP client: Butler vs. Faraday vs. Excon vs. HTTParty vs. Net::HTTP](https://ramlaxmanyadav.github.io/butler-http/choosing-a-ruby-http-client.html):
+  a straight, contender-by-contender comparison.
+
+## Quick start
+
+```ruby
+# HTTParty-style, zero setup:
+Butler.get("https://api.example.com/users").json
+
+# Or a configured Client, for connection pooling/retries/middleware tuned per-API:
+client = Butler::Client.new(base_url: "https://api.example.com")
+
+client.async do |tasks|
+  users  = tasks.async { client.get("/users") }
+  orders = tasks.async { client.get("/orders") }
+  { users: users.wait.json, orders: orders.wait.json }
+end
+```
+
+## What it does
+
+- HTTP/1.1 and HTTP/2 with transparent ALPN negotiation; `http_version: :auto|:http1|:http2`,
+  overridable per client or per call.
+- Structured concurrency via `client.async`, real parent/child task cancellation and exception
+  propagation.
+- Resilience: total-budget `deadline:` across every retry/redirect, exponential backoff with jitter,
+  `Retry-After` support, a per-host circuit breaker, retry rules that respect HTTP semantics (POST
+  never auto-retried on a 5xx; GET/HEAD/OPTIONS always retry-eligible; PUT/DELETE only when marked
+  `idempotent: true`).
+- Security: TLS/hostname verification on by default, host allow/block list, response/header size
+  limits, credential stripping on cross-origin redirects.
+- Observability: standalone instrumentation, optional OpenTelemetry spans, optional Rails/
+  ActiveSupport::Notifications bridge.
+- Testing: native request stubbing (`Butler::Testing.stub_request`), no WebMock/VCR dependency.
+- Runtime dependencies: `async` and `async-http` only (both from the
+  [socketry](https://github.com/socketry) ecosystem) — Butler owns its public abstractions on top;
+  nothing outside `lib/butler/transport.rb` ever touches those types.
+
+## Links
+
+- [GitHub repo](https://github.com/ramlaxmanyadav/butler-http)
+- [RubyGems](https://rubygems.org/gems/butler-http)
+- [This site's index](https://ramlaxmanyadav.github.io/butler-http/)

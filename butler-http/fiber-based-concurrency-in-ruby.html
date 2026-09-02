@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fiber-Based Concurrency in Ruby, Explained — Butler</title>
+<meta name="description" content="What Ruby's Fiber::Scheduler actually is, how Fiber-per-request differs from thread-per-request, and why it fits I/O-bound HTTP work specifically — with Butler's own background-reactor design as a worked example.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Butler</a></p>
+    <h1>Fiber-Based Concurrency in Ruby, Explained</h1>
+    <p class="tagline">What <code>Fiber::Scheduler</code> actually is, how it differs from a Thread
+      pool, and why it's a particularly good fit for an HTTP client.</p>
+  </header>
+
+  <h2>What a Fiber actually is</h2>
+  <p>
+    A Ruby <code>Fiber</code> is a unit of execution you control by hand: it runs until it explicitly
+    yields, and nothing switches away from it involuntarily the way a Thread can be preempted mid-line.
+    On its own that's just cooperative scheduling — mildly interesting, not obviously useful for I/O.
+    What makes it useful is <code>Fiber::Scheduler</code> (Ruby 3.0+): a hook that lets a library
+    intercept blocking operations — a socket read, <code>sleep</code>, a Mutex wait — and, instead of
+    blocking the whole OS thread, yield control to <em>another</em> Fiber that has work to do, resuming
+    the first one automatically once its I/O is actually ready.
+  </p>
+  <p>
+    The <code>async</code> gem (the reactor Butler is built on) implements exactly that scheduler.
+    Nothing about writing Fiber-scheduled code looks different from writing ordinary synchronous Ruby
+    — no callbacks, no <code>.then</code> chains, no colored async/await functions — because the
+    yielding happens underneath a normal-looking blocking call, not in application code.
+  </p>
+
+  <h2>Thread-per-request vs. Fiber-per-request</h2>
+  <p>
+    A thread-per-request model (the classic way to add concurrency to a blocking I/O client) gives
+    every in-flight request its own OS thread. That works, but OS threads aren't free: each one carries
+    real memory (a stack, kernel scheduling structures) and real context-switch cost, and Ruby's GVL
+    means only one thread runs Ruby bytecode at a time regardless — threads help exactly because I/O
+    waits release the GVL, not because Ruby got parallel.
+  </p>
+  <p>
+    Fibers pay almost none of that overhead. Thousands of them can be alive at once on a single OS
+    thread, because a Fiber that's waiting on I/O isn't consuming a kernel thread's worth of resources
+    while it waits — it's just a suspended, resumable stack the scheduler is holding onto. For a
+    workload that's mostly "waiting on the network" (which describes almost every HTTP client call),
+    that's the exact shape of overhead you don't need to pay.
+  </p>
+
+  <h2>Why this fits HTTP clients specifically</h2>
+  <p>
+    An HTTP request spends the overwhelming majority of its wall-clock time waiting: DNS, TCP connect,
+    TLS handshake, waiting for the server's response. A client library's job during almost all of that
+    time is to do nothing but hold state and wait to be resumed — which is precisely what a Fiber does
+    well and a Thread does at a real, measurable cost. Fanning out 50 concurrent requests as 50 Fibers
+    instead of 50 Threads means avoiding 50 threads' worth of memory and scheduling overhead for work
+    that's fundamentally "wait, then do a small amount of CPU work, then wait again."
+  </p>
+
+  <h2>How Butler uses this</h2>
+  <p>
+    <code>client.async { |tasks| tasks.async { client.get("/a") } }</code> gives you real structured
+    concurrency — an <code>Async::Barrier</code> underneath resolves any child task the block forgot to
+    <code>.wait</code> and cancels anything still running after an exception, so exiting the block
+    always leaves every child task resolved or cancelled. That's the shape you want for "fetch these 5
+    endpoints concurrently" without hand-rolling your own thread-pool bookkeeping.
+  </p>
+  <p>
+    The less obvious part is what happens for an <em>ordinary</em>, non-concurrent <code>client.get</code>
+    call. The naive way to make one async-native call "just work" synchronously is
+    <code>Async { ... }.wait</code> — spin up a whole reactor, run the block, tear it down — and that's
+    real, measurable overhead paid on every single bare call. Butler avoids it with one background
+    reactor (<code>Butler::Async.background</code>), running in one dedicated Thread, lazily started
+    once and shared by every <code>Butler::Client</code> in the process for its whole lifetime.
+    <code>Client#request</code> checks whether it's already inside a reactor first (a nested
+    <code>client.async</code>, or a Fiber-scheduler-based app server like Falcon) and runs inline with
+    zero dispatch overhead if so; otherwise the work is handed to that shared background reactor over a
+    plain <code>Thread::Queue</code>, and the calling thread blocks on a second Queue until the result
+    comes back — invisibly, so a bare <code>client.get("/users")</code> still looks and behaves like an
+    ordinary synchronous method call from the outside.
+  </p>
+
+  <h2>Further reading</h2>
+  <ul>
+    <li><a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/docs/architecture.md#why-bare-calls-dont-pay-reactor-setup-per-call">The full background-reactor design</a>
+      in Butler's architecture docs.</li>
+    <li><a href="./resilient-http-clients-timeouts-retries-circuit-breakers.html">Building resilient
+      HTTP clients</a> — what Butler layers on top of this concurrency model.</li>
+    <li><a href="./index.html">Back to Butler</a>.</li>
+  </ul>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/butler-http">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>
