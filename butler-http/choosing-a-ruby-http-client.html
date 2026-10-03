@@ -7,6 +7,13 @@
 <meta name="description" content="A straight, contender-by-contender comparison of Ruby's HTTP client options — Net::HTTP, Faraday, Excon, HTTP.rb, HTTParty, Async::HTTP, and Butler — and which trade-offs actually matter for your project.">
 <link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
 <link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Choosing a Ruby HTTP Client — Butler">
+<meta property="og:description" content="A straight, contender-by-contender comparison of Ruby's HTTP client options — Net::HTTP, Faraday, Excon, HTTP.rb, HTTParty, Async::HTTP, and Butler.">
+<meta property="og:url" content="https://ramlaxmanyadav.github.io/butler-http/choosing-a-ruby-http-client.html">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Choosing a Ruby HTTP Client — Butler">
+<meta name="twitter:description" content="A straight, contender-by-contender comparison of Ruby's HTTP client options — Net::HTTP, Faraday, Excon, HTTP.rb, HTTParty, Async::HTTP, and Butler.">
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -63,11 +70,12 @@
 
   <h2>Faraday</h2>
   <p>
-    The ecosystem play — a huge middleware library and pluggable adapters (Net::HTTP, Excon,
-    Typhoeus, and others underneath the same API). That flexibility is also its cost: the
-    adapter/middleware abstraction is a real layer of indirection, and Faraday's own behavior can
-    shift depending on which adapter you've plugged in underneath it. Strong choice if you want that
-    ecosystem's breadth and are fine configuring resilience yourself via middleware.
+    <strong>Faraday gives you an ecosystem. Butler gives you a modern HTTP runtime.</strong> Faraday's
+    strength is a huge middleware library and pluggable adapters (Net::HTTP, Excon, Typhoeus, and
+    others underneath the same API). That flexibility is also its cost: the adapter/middleware
+    abstraction is a real layer of indirection, and Faraday's own behavior can shift depending on
+    which adapter you've plugged in underneath it. Strong choice if you want that ecosystem's breadth
+    and are fine configuring resilience yourself via middleware.
   </p>
 
   <h2>Excon</h2>
@@ -95,9 +103,10 @@
 
   <h2>Async::HTTP</h2>
   <p>
-    An excellent async foundation — real Fiber-native HTTP/1.1 and HTTP/2, per-origin connection
-    pooling, stream multiplexing, all implemented well. What it doesn't give you is a client-facing
-    API or resilience layer above that foundation — you're building your own
+    <strong>Async::HTTP gives you the foundation. Butler gives you the application-facing client.</strong>
+    Async::HTTP is an excellent async foundation — real Fiber-native HTTP/1.1 and HTTP/2, per-origin
+    connection pooling, stream multiplexing, all implemented well. What it doesn't give you is a
+    client-facing API or resilience layer above that foundation — you're building your own
     <code>Client</code>/<code>Request</code>/<code>Response</code> abstraction, your own retry policy,
     your own circuit breaker, on top of it yourself.
   </p>
@@ -126,10 +135,11 @@
     <tr><td>Native request stubbing</td><td>✓</td><td>via WebMock</td><td>via WebMock</td><td>via WebMock</td></tr>
   </table>
   <p>
-    This describes each library's design intent, not an independently re-verified benchmark of every
-    listed library's current release — re-check before quoting it externally. Full matrix (including
-    HTTParty, HTTP.rb, and Async::HTTP) and a real Sequential/Concurrent benchmark run against several
-    of these clients in the
+    This describes each library's design intent, not an independently re-tested benchmark of every
+    listed library's current release — re-check before quoting it externally. Competitor versions
+    checked 2026-09-02: <code>faraday 2.14.3</code>, <code>excon 1.7.1</code>,
+    <code>httparty 0.24.2</code>, <code>http.rb 6.0.4</code>. Full matrix and a real
+    Sequential/Concurrent benchmark run against several of these clients in the
     <a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/README.md#why-butler">README</a>.
   </p>
 

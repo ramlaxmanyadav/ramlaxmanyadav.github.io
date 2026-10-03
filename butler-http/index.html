@@ -3,10 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Butler — A Fiber-native HTTP client for Ruby with HTTP/1.1 and HTTP/2, structured concurrency, and built-in resilience.</title>
-<meta name="description" content="Butler is a Ruby HTTP client designed around modern Fiber-based concurrency — HTTP/1.1 and HTTP/2 with transparent ALPN negotiation, structured concurrency, built-in resilience (timeouts, deadlines, retries, circuit breaker), and security-conscious defaults.">
+<title>Butler — Modern HTTP for Modern Ruby</title>
+<meta name="description" content="Butler is the modern Ruby HTTP client built for concurrent, resilient applications — Fiber-native concurrency, HTTP/1.1 + HTTP/2, and production-grade resilience in one client.">
 <link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
 <link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Butler — Modern HTTP for Modern Ruby">
+<meta property="og:description" content="Fiber-native concurrency, HTTP/1.1 + HTTP/2, and production-grade resilience in one Ruby HTTP client.">
+<meta property="og:url" content="https://ramlaxmanyadav.github.io/butler-http/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Butler — Modern HTTP for Modern Ruby">
+<meta name="twitter:description" content="Fiber-native concurrency, HTTP/1.1 + HTTP/2, and production-grade resilience in one Ruby HTTP client.">
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -51,10 +58,9 @@
 <div class="wrap">
 
   <header>
-    <h1>Butler — a Ruby HTTP client designed around modern Fiber-based concurrency</h1>
-    <p class="tagline">HTTP/1.1 and HTTP/2 with transparent ALPN negotiation, structured concurrency,
-      built-in resilience, and security-conscious defaults — without ever exposing its transport in
-      the public API.</p>
+    <h1>Modern HTTP for modern Ruby.</h1>
+    <p class="tagline">Fiber-native concurrency, HTTP/1.1 + HTTP/2, and production-grade resilience in
+      one Ruby HTTP client — without ever exposing its transport in the public API.</p>
     <div class="badges">
       <a href="https://rubygems.org/gems/butler-http"><span class="badge">gem install butler-http</span></a>
       <a href="https://github.com/ramlaxmanyadav/butler-http"><span class="badge">MIT licensed</span></a>
@@ -63,12 +69,14 @@
   </header>
 
   <p>
-    Butler owns its own public API — <code>Client</code>, <code>Request</code>, <code>Response</code>,
-    <code>Headers</code> — built around Ruby's <code>Fiber::Scheduler</code> rather than one Thread per
-    in-flight request. That's the whole point of the design: real HTTP/2 multiplexing, structured
-    concurrency you can actually reason about (<code>client.async { |tasks| ... }</code>), and a
-    resilience layer (timeouts, deadlines, retries with backoff+jitter, a circuit breaker) that's part
-    of the client, not four extra gems bolted onto <code>Net::HTTP</code>.
+    <strong>One client. Modern concurrency. Production-ready HTTP.</strong> Butler is the modern Ruby
+    HTTP client built for concurrent, resilient applications — it owns its own public API
+    (<code>Client</code>, <code>Request</code>, <code>Response</code>, <code>Headers</code>) built
+    around Ruby's <code>Fiber::Scheduler</code> rather than one Thread per in-flight request. That's
+    the whole point of the design: real HTTP/2 multiplexing, structured concurrency you can actually
+    reason about (<code>client.async { |tasks| ... }</code>), and a resilience layer (timeouts,
+    deadlines, retries with backoff+jitter, a circuit breaker) that's part of the client, not four
+    extra gems bolted onto <code>Net::HTTP</code>.
   </p>
 
   <pre><code>gem install butler-http</code></pre>
@@ -86,6 +94,9 @@ client.async do |tasks|
 end</code></pre>
 
   <h2>What it does</h2>
+  <p><strong>HTTP/1.1 + HTTP/2 today. HTTP/3 architecture-ready.</strong> Early internal QUIC
+    packet-protection groundwork already exists (RFC 9000/9001-vector-verified), but it's not a usable
+    transport yet — no <code>http_version: :http3</code> today, on purpose, until it actually is one.</p>
   <ul>
     <li><strong>HTTP/1.1 and HTTP/2</strong> — transparent ALPN negotiation, multiplexed connection
       pooling per origin, and a per-call <code>http_version:</code> override when you need to force
@@ -119,12 +130,19 @@ end</code></pre>
     <tr><td>Native request stubbing</td><td>✓</td><td>via WebMock</td><td>via WebMock</td><td>via WebMock</td></tr>
   </table>
   <p>
-    The one architectural rule that keeps this from rotting into "Faraday but slower": Butler owns
-    its public abstractions. <code>async</code>/<code>async-http</code> implement the real transport
-    underneath, but nothing outside <code>lib/butler/transport.rb</code> ever touches those types —
-    the public API doesn't change if the transport underneath it ever does. Full breakdown, including
-    Excon/HTTParty and a real Sequential/Concurrent benchmark matrix, in the
+    <strong>Faraday gives you an ecosystem. Butler gives you a modern HTTP runtime.</strong>
+    <strong>Async::HTTP gives you the foundation. Butler gives you the application-facing client.</strong>
+    That's the one architectural rule that keeps this from rotting into "Faraday but slower": Butler
+    owns its public abstractions. <code>async</code>/<code>async-http</code> implement the real
+    transport underneath, but nothing outside <code>lib/butler/transport.rb</code> ever touches those
+    types — the public API doesn't change if the transport underneath it ever does. Full breakdown,
+    including Excon/HTTParty and a real Sequential/Concurrent benchmark matrix, in the
     <a href="https://github.com/ramlaxmanyadav/butler-http/blob/main/README.md">README</a>.
+  </p>
+  <p style="font-size:0.85rem;color:#94a3b8;">
+    Competitor versions checked 2026-09-02: <code>faraday 2.14.3</code>,
+    <code>excon 1.7.1</code>. Capability cells describe design intent, not an independent re-test of
+    every release — re-check before quoting externally.
   </p>
 
   <h2>Guides</h2>

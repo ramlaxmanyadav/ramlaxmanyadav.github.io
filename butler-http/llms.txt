@@ -1,12 +1,15 @@
-# Butler — Fiber-Native HTTP Client for Ruby
+# Butler — Modern HTTP for Modern Ruby
 
-> Butler is a Ruby HTTP client designed around modern Fiber-based concurrency — not a thin wrapper
-> around the `async`/`async-http` gems it's built on. It owns its own public API
+> Butler is the modern Ruby HTTP client built for concurrent, resilient applications — not a thin
+> wrapper around the `async`/`async-http` gems it's built on (Async::HTTP gives you the foundation;
+> Butler gives you the application-facing client). It owns its own public API
 > (`Client`/`Request`/`Response`/`Headers`) in front of real HTTP/1.1 **and** HTTP/2 (transparent ALPN
-> negotiation, multiplexed connection pooling), structured concurrency (`client.async { |tasks| ... }`,
-> backed by an `Async::Barrier` for real parent/child cancellation), and a resilience layer (timeouts,
-> a total-budget deadline that survives every retry/redirect, retries with exponential backoff and
-> jitter, a CLOSED/OPEN/HALF_OPEN circuit breaker) built in rather than assembled from four extra gems.
+> negotiation, multiplexed connection pooling) — HTTP/1.1 + HTTP/2 today, HTTP/3 architecture-ready
+> (early internal QUIC packet-protection groundwork exists, not a usable transport yet) — structured
+> concurrency (`client.async { |tasks| ... }`, backed by an `Async::Barrier` for real parent/child
+> cancellation), and a resilience layer (timeouts, a total-budget deadline that survives every
+> retry/redirect, retries with exponential backoff and jitter, a CLOSED/OPEN/HALF_OPEN circuit
+> breaker) built in rather than assembled from four extra gems.
 
 Security-conscious defaults: TLS/hostname verification on by default, certificate-verification
 failures raised as their own error type and never retried (a bad certificate won't become valid on the
@@ -31,6 +34,9 @@ ActiveSupport::Notifications bridges. Native request stubbing with no WebMock/VC
   background-reactor design that makes bare synchronous calls not pay per-call reactor setup, the
   deadline-vs-per-stage-timeout model, and the HTTP/3 (QUIC) foundational work in progress (packet-level
   crypto only so far — not reachable from the public API yet).
+- [Butler in Rails](https://github.com/ramlaxmanyadav/butler-http/blob/main/docs/rails.md): the full
+  worked example — initializer, a service-object pattern, and a real subtlety around subscribing to
+  `"butler.request"` on `ActiveSupport::Notifications` correctly.
 - [Benchmarks](https://github.com/ramlaxmanyadav/butler-http/blob/main/benchmarks/README.md): seven
   scripts covering sequential vs. concurrent, HTTP/1.1 vs. HTTP/2, allocations, memory, and a
   Butler/Net::HTTP/Faraday/Excon/HTTParty comparison matrix — real measured numbers, not claims.
