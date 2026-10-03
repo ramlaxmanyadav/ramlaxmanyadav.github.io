@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Module-Wise Permissions: A Practical Rails Authorization Pattern — Argus::Trail</title>
+<meta name="description" content="Scoping Rails permissions to controller x action instead of hand-typed names, generating them from your routes, and enforcing them with one line per controller.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Argus::Trail</a></p>
+    <h1>Module-Wise Permissions: A Practical Rails Authorization Pattern</h1>
+    <p class="tagline">Scoping permissions to controller × action instead of hand-typed strings,
+      generating them from your actual routes, and enforcing them with one line per
+      controller.</p>
+  </header>
+
+  <p>
+    A common first attempt at permissions is a flat list of hand-invented names:
+    <code>"manage_billing"</code>, <code>"view_reports"</code>, <code>"edit_users"</code>. It
+    works until the list grows past a dozen or so entries, at which point two problems show up
+    reliably: nobody agrees on naming (<code>"edit_users"</code> vs <code>"users_edit"</code> vs
+    <code>"manage_users"</code>), and there's no structural link between a permission string and
+    the code it's supposed to gate — a renamed controller or a removed action leaves a dangling,
+    silently-dead permission row behind with nothing to notice it happened.
+  </p>
+
+  <h2>The pattern: permission = controller × action</h2>
+  <p>
+    <strong>Module-wise permissions</strong> fix the naming problem by deriving the permission
+    directly from the thing it protects: the controller (the "module") and a normalized action.
+    Argus::Trail represents this as two columns instead of one name —
+    <code>module_name: "admin/accounts", action: "read"</code> — and normalizes the seven standard
+    REST actions down to four verbs so a role's checkbox list doesn't need six near-duplicate rows
+    for one resource:
+  </p>
+  <pre><code>index, show   → read
+new, create   → create
+edit, update  → update
+destroy       → destroy
+(anything else — a custom action — kept as-is)</code></pre>
+  <p>
+    That mapping is exactly what <code>Argus::Trail::Authorizable</code> uses to check a request
+    and what <code>bin/rails argus_trail:fetch_permissions</code> uses to generate permissions in
+    the first place — both sides of the gate agree on the same convention because they're reading
+    it from the same place.
+  </p>
+
+  <h2>Generating permissions from your routes</h2>
+  <p>
+    Instead of typing out every <code>module_name</code>/<code>action</code> pair by hand, scan
+    for them:
+  </p>
+  <pre><code>bin/rails argus_trail:fetch_permissions</code></pre>
+  <p>
+    This walks <code>Rails.application.routes</code>, skips the engine's own routes and
+    framework-internal ones (health checks, Active Storage, Action Mailbox/Text — more via
+    <code>config.permission_scan_excludes</code>), and creates a <code>Permission</code> for every
+    remaining controller/action pair it finds. It only ever <em>adds</em> — safe to rerun after
+    adding new controllers or actions, so the permission list grows alongside your app instead of
+    drifting out of sync with it. A companion task removes the other direction of drift:
+  </p>
+  <pre><code>bin/rails argus_trail:fetch_permissions:prune</code></pre>
+  <p>
+    Removes permissions whose route no longer exists <em>and</em> aren't granted to any role —
+    one still granted to a role is left in place and reported instead of silently deleted, so
+    renaming a controller never quietly revokes something a role was actually depending on.
+  </p>
+
+  <h2>Enforcing it: one line, not one policy per controller</h2>
+  <p>
+    Because the convention is structural (controller path + normalized action), enforcement
+    doesn't need a hand-written policy class per resource — it can be derived the same way the
+    permissions were generated:
+  </p>
+  <pre><code>class AccountsController < ApplicationController
+  include Argus::Trail::Authorizable
+end</code></pre>
+  <p>
+    This adds a <code>before_action</code> that reads <code>controller_path</code> (e.g.
+    <code>"admin/accounts"</code>) and the current action, normalizes the action the same way
+    <code>fetch_permissions</code> did, and checks it against the signed-in actor's roles via
+    <code>actor.has_permission?(module_name, action)</code> — a 403 if there's no match. The same
+    method works for a plain, hand-typed permission too (single-argument form), so a few
+    structural, route-shaped permissions and a few one-off named ones coexist in the same table
+    without needing two different APIs:
+  </p>
+  <pre><code>user.has_permission?("admin/accounts", :read)   # module-wise
+user.has_permission?("manage_billing")          # plain name</code></pre>
+
+  <h2>What this pattern doesn't solve</h2>
+  <p>
+    Module-wise permissions answer "can this role access this controller action at all" —
+    resource-shaped, not record-shaped. "Can Alice edit <strong>this specific</strong> invoice, but
+    not everyone else's" is a different, per-instance question that a flat permission table can't
+    express on its own; that's exactly where Pundit's policy scopes still earn their place
+    alongside this, rather than being replaced by it (see
+    <a href="./what-is-rbac-for-rails.html">What is RBAC for Rails?</a>).
+  </p>
+
+  <h2>Further reading</h2>
+  <div class="links">
+    <a href="./what-is-rbac-for-rails.html">What is RBAC for Rails?</a>
+    <a href="./audit-trails-for-role-changes.html">Audit trails for role changes</a>
+    <a href="https://github.com/ramlaxmanyadav/argus-trail/blob/main/README.md">Full README</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Argus::Trail</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/argus-trail">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

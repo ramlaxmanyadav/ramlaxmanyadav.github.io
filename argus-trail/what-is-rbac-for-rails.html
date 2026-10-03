@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>What Is Role-Based Access Control (RBAC) for Rails? — Argus::Trail</title>
+<meta name="description" content="Role-based access control for Rails, explained: the actor/role/permission model, how it differs from a single admin boolean, and where Argus::Trail sits among Pundit, CanCanCan, and rolify.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Argus::Trail</a></p>
+    <h1>What Is Role-Based Access Control (RBAC) for Rails?</h1>
+    <p class="tagline">The actor/role/permission model explained, how it differs from a single
+      <code>admin</code> boolean column, and where a library like Argus::Trail sits versus
+      Pundit, CanCanCan, and rolify.</p>
+  </header>
+
+  <p>
+    <strong>Role-based access control (RBAC)</strong> is an authorization model where permissions
+    aren't granted to individual users directly — they're granted to <strong>roles</strong>, and
+    users are assigned to one or more roles. Instead of asking "can Alice delete an invoice,"
+    RBAC asks "is Alice in a role that grants <code>invoices#destroy</code>," which is the same
+    question for every other user in that role too. That indirection is the entire point: change
+    what a role can do once, and every actor holding it changes with it — no per-user permission
+    rows to hunt down and update.
+  </p>
+
+  <h2>Why not just a boolean <code>admin</code> column?</h2>
+  <p>
+    A single <code>admin: true/false</code> flag is RBAC's degenerate case — exactly two roles,
+    "everything" and "nothing" — and it's genuinely fine for an app that only ever needs that
+    distinction. It stops working the moment you need a third tier: a support rep who can view
+    accounts but not refund them, a deploy-only operator who should never touch billing, a
+    read-only auditor. Each new case either grows a pile of booleans
+    (<code>admin</code>, <code>can_refund</code>, <code>can_deploy</code>, ...) scattered across
+    the users table, or pushes you toward an actual role model — at which point you're building
+    RBAC by hand anyway, just without the vocabulary for it yet.
+  </p>
+
+  <h2>The model, concretely</h2>
+  <ul>
+    <li><strong>Actor</strong> — whoever is being authorized; almost always your <code>User</code>/
+      <code>Account</code> model, but the concept doesn't require that (an API key or a service
+      account can be an actor too).</li>
+    <li><strong>Role</strong> — a named bundle of permissions ("support", "billing-admin",
+      "deployer"). An actor can hold one role or several, depending on the system.</li>
+    <li><strong>Permission</strong> — the actual grant: can this role do <em>this specific
+      thing</em>. The hard design question is what "thing" means — a hand-typed string
+      (<code>"manage_billing"</code>), or something structural like a controller action
+      (<code>admin/accounts#read</code>). Argus::Trail supports both: plain named permissions for
+      one-off grants, and <strong>module-wise</strong> permissions
+      (<code>module_name</code> + <code>action</code>) generated straight from your routes — see
+      <a href="./module-wise-permissions-in-rails.html">Module-wise permissions</a>.</li>
+    <li><strong>Assignment</strong> — the join between actor and role, and separately between role
+      and permission. Worth tracking <em>when</em> and <em>by whom</em> each assignment changed,
+      not just its current state — see
+      <a href="./audit-trails-for-role-changes.html">Audit trails for role changes</a>.</li>
+  </ul>
+
+  <h2>Where a library fits in</h2>
+  <p>
+    Pundit and CanCanCan solve a narrower problem than full RBAC: given a user and a record,
+    answer yes/no. Neither ships a persisted role or permission model — you write the
+    <code>Ability</code>/policy classes yourself, usually hardcoding which roles can do what
+    directly in Ruby. That's a perfectly reasonable choice for an app with two or three fixed
+    roles that rarely change. It gets harder to manage once non-engineers need to create new roles
+    or tweak permissions without a deploy — at that point the role/permission data needs to live in
+    the database, with an admin UI on top, which is what Argus::Trail adds. It auto-integrates with
+    Pundit rather than replacing it: define a policy, or don't, and the admin screens default to
+    "any signed-in actor" either way.
+  </p>
+  <table>
+    <tr><th>Capability</th><th>Argus::Trail</th><th>Pundit</th><th>CanCanCan</th><th>rolify</th></tr>
+    <tr><td>Persisted role/permission model</td><td>✅</td><td>❌</td><td>Partial</td><td>Roles only</td></tr>
+    <tr><td>Admin UI to manage roles/permissions</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Audit log of changes</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Record-level authorization (per-instance rules)</td><td>Via Pundit</td><td>✅</td><td>✅</td><td>❌</td></tr>
+  </table>
+  <p>That split is deliberate: Argus::Trail owns <em>what roles/permissions exist and who has
+    them</em>; Pundit (if you use it) still owns <em>per-record</em> authorization logic like "can
+    this user edit <strong>this specific</strong> invoice" — the two compose rather than compete.</p>
+
+  <h2>Further reading</h2>
+  <div class="links">
+    <a href="./module-wise-permissions-in-rails.html">Module-wise permissions in Rails</a>
+    <a href="./audit-trails-for-role-changes.html">Audit trails for role changes</a>
+    <a href="https://github.com/ramlaxmanyadav/argus-trail/blob/main/README.md">Full README</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Argus::Trail</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/argus-trail">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

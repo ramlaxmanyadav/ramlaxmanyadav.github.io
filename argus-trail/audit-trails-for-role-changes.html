@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Why Audit Trails Matter for Role and Permission Changes — Argus::Trail</title>
+<meta name="description" content="What 'who granted this and when' actually needs to survive an incident review, why updated_at isn't an audit log, and how Argus::Trail's AuditEntry is structured.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Argus::Trail</a></p>
+    <h1>Why Audit Trails Matter for Role and Permission Changes</h1>
+    <p class="tagline">What "who granted this, and when" actually needs to survive an incident
+      review — and why a generic <code>updated_at</code> timestamp doesn't answer it.</p>
+  </header>
+
+  <p>
+    The question that actually gets asked after something goes wrong is rarely "what does this
+    role currently grant" — it's <strong>"who gave this account that permission, and when did it
+    happen."</strong> A <code>roles</code> table with an <code>updated_at</code> column answers the
+    first question and actively obstructs the second: every update overwrites the one before it,
+    so the row you're looking at during an incident has already lost the history that would tell
+    you whether a specific grant was a week old or a year old, deliberate or a leftover from
+    testing.
+  </p>
+
+  <h2>What a real audit entry needs</h2>
+  <p>
+    Logging "role updated" isn't enough — a role update can bundle several unrelated changes into
+    one save, and a generic message can't tell you which one mattered. A useful audit trail needs,
+    per change, not per save:
+  </p>
+  <ul>
+    <li><strong>What actually changed</strong> — one entry per grant/revoke, not one entry per
+      form submission. Assigning two roles to an actor in one call should produce two audit rows,
+      each naming the specific role, not one row saying "roles changed."</li>
+    <li><strong>Who changed it</strong> — the acting user, not just the affected one. "Alice's
+      account gained the billing-admin role" is only half the story without "...and Bob granted
+      it."</li>
+    <li><strong>When, immutably</strong> — a created-at timestamp that itself never gets edited
+      once written. An audit log you can update after the fact isn't an audit log.</li>
+    <li><strong>Enough context to survive a rename</strong> — if the role or permission is later
+      renamed or deleted, the historical entry should still say what it was called at the time,
+      not silently point at nothing (or worse, at a different thing that now has the same id).</li>
+  </ul>
+
+  <h2>How Argus::Trail structures this</h2>
+  <p>
+    <code>Actor#sync_roles!</code> and <code>Role#sync_permissions!</code> are the only supported
+    way to change role/permission assignments — diffing the requested set against the current one
+    and writing one <code>AuditEntry</code> per addition and per removal:
+  </p>
+  <pre><code>user.sync_roles!([admin_role.id, support_role.id], changed_by: current_user)
+# => writes one AuditEntry(event_type: "role_assigned") per newly-added role,
+#    one AuditEntry(event_type: "role_revoked") per removed one — none at all
+#    if the set is unchanged.
+
+role.sync_permissions!(params[:permission_ids], changed_by: current_user)
+# => same idea: "permission_granted" / "permission_revoked", one row each.</code></pre>
+  <p>
+    Each <code>AuditEntry</code> stores the role/permission's <strong>name at the time</strong> in
+    its own metadata, independent of the live record — so a later rename or deletion doesn't
+    retroactively corrupt what the historical entry says happened. <code>subject</code> (who was
+    affected) and <code>changed_by</code> (who did it) are both polymorphic associations, so the
+    same audit model covers an admin changing a developer's roles, a developer self-service-
+    requesting one, or a background job doing it with no human actor at all (falls back to
+    "System").
+  </p>
+
+  <h2>What this buys you at incident-review time</h2>
+  <table>
+    <tr><th>Question</th><th>Plain <code>updated_at</code></th><th>Argus::Trail's AuditEntry</th></tr>
+    <tr><td>Who granted this specific permission?</td><td>❌ overwritten</td><td>✅ <code>changed_by</code></td></tr>
+    <tr><td>When, exactly?</td><td>Only the <em>last</em> change</td><td>✅ one immutable row per change</td></tr>
+    <tr><td>Was this role touched more than once?</td><td>❌ no history</td><td>✅ full history, queryable</td></tr>
+    <tr><td>Survives a later rename?</td><td>N/A</td><td>✅ name captured at write time</td></tr>
+  </table>
+  <p>
+    None of this requires a separate logging system or a third-party audit gem — it's the same
+    <code>AuditEntry</code> model the admin UI already renders as a paginated, filterable log
+    (<code>bin/rails generate argus:trail:install</code> mounts it alongside the roles/permissions
+    screens), queryable like any other ActiveRecord model for anything beyond that.
+  </p>
+
+  <h2>Further reading</h2>
+  <div class="links">
+    <a href="./what-is-rbac-for-rails.html">What is RBAC for Rails?</a>
+    <a href="./module-wise-permissions-in-rails.html">Module-wise permissions in Rails</a>
+    <a href="https://github.com/ramlaxmanyadav/argus-trail/blob/main/README.md">Full README</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Argus::Trail</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/argus-trail">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

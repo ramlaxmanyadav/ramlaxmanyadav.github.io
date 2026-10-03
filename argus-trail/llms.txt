@@ -1,0 +1,125 @@
+# Argus::Trail — Roles, Permissions, and an Audit Trail for Rails
+
+> Note: "Argus" names several unrelated projects elsewhere (monitoring tools, other libraries) —
+> this page is specifically about the `argus-trail` Ruby gem, a mountable Rails engine.
+
+> Argus::Trail is a mountable Rails engine that gives any app configurable roles and permissions
+> — actors can hold any number of roles — plus a unified, immutable audit log of every role
+> assignment/revocation and every permission granted/revoked on a role, with ready-made, paginated
+> HTML admin screens. Plug-and-play: no hardcoded role/permission names, no fixed actor class, no
+> required auth library (works standalone, auto-integrates with Pundit if present), no required
+> pagination library (auto-integrates with Kaminari, otherwise a small built-in pager).
+
+Ships both plain named permissions (`"manage_billing"`) and module-wise permissions
+(`module_name` + `action`, e.g. `"admin/accounts"` / `"read"`) generated straight from the host
+app's routes via a rake task, plus a one-line controller concern
+(`Argus::Trail::Authorizable`) to enforce them — see "What makes it different" below.
+
+## Getting started
+
+- [README](https://github.com/ramlaxmanyadav/argus-trail/blob/main/README.md): installation,
+  wiring, configuration reference, and links to everything below.
+- [llms-full.txt](https://ramlaxmanyadav.github.io/argus-trail/llms-full.txt): this file plus the
+  complete content of the README and the full integration guide, concatenated into one fetch —
+  for agents that prefer a single request over following links.
+- [gemspec](https://github.com/ramlaxmanyadav/argus-trail/blob/main/argus-trail.gemspec): gem
+  metadata, version, and dependency rationale.
+- [CHANGELOG](https://github.com/ramlaxmanyadav/argus-trail/blob/main/CHANGELOG.md): what's
+  shipped in each version, including the upgrade step for module-wise permissions.
+
+## Documentation
+
+- [Integration Guide](https://github.com/ramlaxmanyadav/argus-trail/blob/main/docs/INTEGRATION_GUIDE.md):
+  a detailed, step-by-step walkthrough — install, wiring your actor model, authorization
+  resolution order (Pundit / `authorize_with` / plug-and-play default), module-wise permissions
+  and `Argus::Trail::Authorizable`, recording role/permission changes, configuration reference,
+  renaming Role/Permission classes, gotchas & troubleshooting, uninstalling, and optional
+  ActiveAdmin registration.
+
+## Guides
+
+- [What is role-based access control (RBAC) for Rails?](https://ramlaxmanyadav.github.io/argus-trail/what-is-rbac-for-rails.html):
+  the actor/role/permission model explained, how it differs from a single `admin` boolean, and
+  where Argus::Trail sits among Pundit, CanCanCan, and rolify.
+- [Module-wise permissions: a practical Rails authorization pattern](https://ramlaxmanyadav.github.io/argus-trail/module-wise-permissions-in-rails.html):
+  scoping permissions to controller × action instead of hand-typed names, generating them from
+  your routes, and enforcing them with one line per controller.
+- [Why audit trails matter for role and permission changes](https://ramlaxmanyadav.github.io/argus-trail/audit-trails-for-role-changes.html):
+  what "who granted this and when" actually needs to survive an incident review, and why a plain
+  `updated_at` column isn't an audit log.
+
+## What makes it different
+
+No other Rails role/permission gem combines all of: a persisted role/permission data model, an
+admin UI to manage it, module-wise permissions generated from your own routes, one-line
+controller enforcement, and an immutable per-change audit log — see the comparison table on the
+[docs site front page](https://ramlaxmanyadav.github.io/argus-trail/) for how it stacks up against
+Pundit, CanCanCan, and rolify specifically.
+
+## Core model
+
+- `Argus::Trail::Role` — `name`/`description`, `has_many :permissions` through
+  `Argus::Trail::RolePermission`, `has_many :actors` through `Argus::Trail::RoleAssignment`.
+  `sync_permissions!(permission_ids, changed_by:)` diffs against current grants and writes one
+  `AuditEntry` per grant/revoke.
+- `Argus::Trail::Permission` — `name`/`description` for a plain, hand-typed permission, or
+  `module_name`/`action` for a module-wise one (name/description auto-derived when both are set).
+  `Permission.grouped_by_module` powers the admin UI's grouped checkbox form.
+  `Permission.module_wise` scopes to module-wise rows only.
+- `Argus::Trail::RoleAssignment` — polymorphic actor↔role join (any actor type, 0..N roles each).
+- `Argus::Trail::AuditEntry` — immutable; `event_type` is one of `role_assigned`/`role_revoked`/
+  `permission_granted`/`permission_revoked`; `subject` (who was affected) and `changed_by` (who
+  did it) are both polymorphic.
+- `Argus::Trail::Actor` (a concern, `include`d into your actor model by the install generator) —
+  adds `roles`, `has_permission?(name)` / `has_permission?(module_name, action)` (memoized per
+  instance, cleared by `sync_roles!`), and `sync_roles!(role_ids, changed_by:)`.
+- `Argus::Trail::Authorizable` (a concern for your OWN controllers) — one `before_action` that
+  derives the required permission from `controller_path` + the normalized action and checks it via
+  `has_permission?`.
+
+## Rake tasks
+
+- `bin/rails argus_trail:fetch_permissions` — scans `Rails.application.routes`, creates a
+  `Permission` for every controller/action pair found (skipping the engine's own routes and
+  framework-internal ones — more exclusions via `config.permission_scan_excludes`), normalizing
+  actions via `config.action_name_mapper` (default: index/show→read, new/create→create,
+  edit/update→update, destroy→destroy, anything else kept as-is). Only ever adds; safe to rerun.
+- `bin/rails argus_trail:fetch_permissions:prune` — removes module-wise permissions whose route
+  is gone and aren't granted to any role (one still granted is left in place and reported).
+
+## Generators
+
+- `bin/rails generate argus:trail:install` — writes `config/initializers/argus_trail.rb`,
+  generates the core migration, mounts the engine, and auto-injects `include Argus::Trail::Actor`
+  into your actor model plus the `current_actor` `before_action` into `ApplicationController`
+  (idempotent; skips gracefully if a file doesn't exist yet). Accepts `--actor=YourModel`.
+- `bin/rails generate argus:trail:upgrade_v0_2` — additive migration for hosts upgrading from a
+  pre-module-wise-permissions version; every step is guarded, so it's a no-op on a host that
+  already has the new columns/indexes.
+- `bin/rails generate argus:trail:views` — copies every view into `app/views/argus/trail` for
+  full override.
+- `bin/rails generate argus:trail:config` — re-templates the initializer.
+
+## Authorization
+
+Resolution order on the engine's own admin screens, every action: an explicit
+`config.authorize_with` proc always wins; otherwise Pundit if a policy is actually defined for the
+record (e.g. `Argus::Trail::RolePolicy`); otherwise a plug-and-play default — any signed-in actor
+is allowed, tightened later via either of the above. This is deliberately open-by-default so the
+admin screens work immediately with zero config.
+
+## Configuration reference
+
+`Argus::Trail.configure { |config| ... }` in `config/initializers/argus_trail.rb`:
+`actor_class_name`, `role_class_name`/`permission_class_name`/`role_permission_class_name`
+(renaming only — still the engine's own tables), `changed_by_resolver`, `authorize_with`,
+`current_actor_method`, `per_page`, `layout`, `permission_scan_excludes`, `action_name_mapper`.
+Full reference: [README#configuration-reference](https://github.com/ramlaxmanyadav/argus-trail/blob/main/README.md#configuration-reference).
+
+## Testing & development
+
+- `bundle install && bin/rails db:migrate && bin/rails test` — `test/dummy` is a minimal Rails app
+  (User model including `Argus::Trail::Actor`, Pundit policies) used to exercise the engine.
+- No test helpers are injected into a host app automatically — this is an admin/ops-facing engine,
+  not something a host app's own request-cycle depends on at runtime beyond the optional
+  `Authorizable` concern.

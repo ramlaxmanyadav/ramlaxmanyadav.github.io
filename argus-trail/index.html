@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Argus::Trail — Roles, permissions, and an audit trail for Rails</title>
+<meta name="description" content="Argus::Trail is a mountable Rails engine for configurable roles and module-wise permissions, plus a unified, immutable audit log of every role/permission change — plug-and-play, with an admin UI included.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  h1 { font-size: 1.9rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  .badges { margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .badges a { text-decoration: none; }
+  .badge {
+    display: inline-block; font-size: 0.78rem; font-weight: 600; padding: 0.3rem 0.7rem;
+    border-radius: 999px; background: #eef2ff; color: #3730a3; border: 1px solid #e0e7ff;
+  }
+  h2 { font-size: 1.15rem; margin-top: 2.5rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a {
+    color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem;
+  }
+  .links a:hover { text-decoration: underline; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  td:not(:first-child) { text-align: center; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Argus::Trail — Roles, permissions, and an audit trail for Rails</h1>
+    <p class="tagline">A mountable Rails engine that gives any app configurable roles and
+      module-wise permissions — actors can hold any number of roles — plus a unified, immutable
+      audit log of every role assignment/revocation and every permission granted/revoked, with
+      ready-made, paginated HTML admin screens.</p>
+    <div class="badges">
+      <a href="https://rubygems.org/gems/argus-trail"><span class="badge">gem install argus-trail</span></a>
+      <a href="https://github.com/ramlaxmanyadav/argus-trail"><span class="badge">MIT licensed</span></a>
+      <a href="https://github.com/ramlaxmanyadav/argus-trail"><span class="badge">no auth library required</span></a>
+    </div>
+  </header>
+
+  <p>
+    Most Rails apps end up building the same three things by hand: a <code>Role</code>/<code>Permission</code>
+    table, something that checks them in a controller, and — eventually, usually after an
+    incident — a log of who changed what. Argus::Trail ships all three as one mountable engine:
+    plain ActiveRecord models, an admin UI to manage them, a rake task that generates permissions
+    straight from your routes, and a one-line controller concern to enforce them. No hardcoded
+    role/permission names, no fixed actor class, no required auth library.
+  </p>
+
+  <pre><code># Gemfile
+gem "argus-trail"</code></pre>
+
+  <pre><code>bundle install
+bin/rails generate argus:trail:install
+bin/rails db:migrate
+bin/rails argus_trail:fetch_permissions</code></pre>
+
+  <p>
+    That last command scans your app's routes and creates a <code>Permission</code> for every
+    controller/action it finds — <code>module_name: "admin/accounts", action: "read"</code> — so
+    you're assigning real permissions to roles within minutes, not hand-typing them one at a time.
+    Gate your own controllers with the same convention, no further code:
+  </p>
+
+  <pre><code>class AccountsController < ApplicationController
+  include Argus::Trail::Authorizable
+end</code></pre>
+
+  <h2>What it gives you</h2>
+  <ul>
+    <li><strong>Roles &amp; permissions</strong> — plain ActiveRecord models
+      (<code>Argus::Trail::Role</code>/<code>Permission</code>); an actor can hold any number of
+      roles (0..N), tracked in the engine's own polymorphic join table — no schema change to your
+      actor/user table at all.</li>
+    <li><strong>Module-wise permissions</strong> — <code>module_name</code> + <code>action</code>
+      (e.g. <code>"admin/accounts"</code> / <code>"read"</code>) alongside plain named permissions
+      for anything that isn't controller-shaped. <code>bin/rails argus_trail:fetch_permissions</code>
+      generates these from your routes and is safe to rerun as your app grows; <code>fetch_permissions:prune</code>
+      removes ones whose route is gone and aren't granted to any role.</li>
+    <li><strong>One-line enforcement</strong> — <code>include Argus::Trail::Authorizable</code> in
+      any controller derives the required permission from the controller + action automatically
+      and checks it against the signed-in actor's roles.</li>
+    <li><strong>An immutable audit log</strong> — every role assignment/revocation and every
+      permission grant/revoke on a role writes an <code>AuditEntry</code>, via
+      <code>Actor#sync_roles!</code>/<code>Role#sync_permissions!</code> — not a single generic
+      "updated" row, one entry per actual change, with who made it.</li>
+    <li><strong>Admin UI included</strong> — paginated HTML screens for roles, permissions (grouped
+      by module, with a "select all" toggle), and the audit log — ships as part of the engine, no
+      separate admin framework required.</li>
+    <li><strong>Plug-and-play install</strong> — the install generator wires up your actor model
+      and <code>ApplicationController</code> automatically; the admin screens work out of the box
+      (any signed-in actor) and tighten with a Pundit policy or <code>config.authorize_with</code>
+      whenever you're ready.</li>
+  </ul>
+
+  <h2>How it compares</h2>
+  <p>
+    Pundit and CanCanCan are authorization <em>libraries</em> — they check "can this user do X,"
+    but ship no persisted role/permission model, no admin UI, and no audit trail; you bring your
+    own. rolify persists roles, but not permissions, and has no built-in enforcement or audit log.
+    Argus::Trail auto-integrates with Pundit if it's already in your Gemfile, rather than competing
+    with it.
+  </p>
+  <table>
+    <tr><th>Capability</th><th>Argus::Trail</th><th>Pundit</th><th>CanCanCan</th><th>rolify</th></tr>
+    <tr><td>Persisted role/permission model</td><td>✅</td><td>❌</td><td>Partial</td><td>Roles only</td></tr>
+    <tr><td>Module-wise (controller×action) permissions</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Generates permissions from your routes</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>One-line controller enforcement</td><td>✅</td><td>Per-policy</td><td>✅</td><td>❌</td></tr>
+    <tr><td>Audit log of role/permission changes</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Admin UI included</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Works with zero auth library installed</td><td>✅</td><td>—</td><td>—</td><td>✅</td></tr>
+    <tr><td>Auto-integrates with Pundit if present</td><td>✅</td><td>—</td><td>❌</td><td>❌</td></tr>
+  </table>
+
+  <h2>Guides</h2>
+  <ul>
+    <li><a href="./what-is-rbac-for-rails.html">What is role-based access control (RBAC) for
+      Rails?</a> — the model explained, how it differs from a single admin flag, and where
+      Argus::Trail sits versus Pundit/CanCanCan/rolify.</li>
+    <li><a href="./module-wise-permissions-in-rails.html">Module-wise permissions: a practical
+      Rails authorization pattern</a> — scoping permissions to controller × action instead of
+      hand-typed names, and generating them straight from your routes.</li>
+    <li><a href="./audit-trails-for-role-changes.html">Why audit trails matter for role and
+      permission changes</a> — what "who granted this and when" actually needs to survive an
+      incident review, and why a generic updated_at isn't enough.</li>
+  </ul>
+
+  <h2>Links</h2>
+  <div class="links">
+    <a href="https://github.com/ramlaxmanyadav/argus-trail">GitHub repo</a>
+    <a href="https://github.com/ramlaxmanyadav/argus-trail/blob/main/README.md">Full README</a>
+    <a href="https://github.com/ramlaxmanyadav/argus-trail/blob/main/docs/INTEGRATION_GUIDE.md">Integration guide</a>
+    <a href="https://rubygems.org/gems/argus-trail">RubyGems</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/argus-trail">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>
