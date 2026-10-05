@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The DoubleRenderError Trap: Rendering a Rails View to PDF — HtmlToPdf</title>
+<meta name="description" content="Why a before_action that quietly re-renders a controller action to capture its HTML can raise AbstractController::DoubleRenderError in a real Rails app, the response= setter detail that causes it, and why the fix has to be an around_action.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<meta property="og:type" content="article">
+<meta property="og:title" content="The DoubleRenderError Trap: Rendering a Rails View to PDF">
+<meta property="og:description" content="The Rails internals reason a before_action that re-renders a view to capture its HTML crashes in a real app, and why the fix has to be an around_action.">
+<meta property="og:url" content="https://ramlaxmanyadav.github.io/htmlToPdf/rails-double-render-pdf.html">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="The DoubleRenderError Trap: Rendering a Rails View to PDF">
+<meta name="twitter:description" content="The Rails internals reason a before_action that re-renders a view to capture its HTML crashes in a real app, and why the fix has to be an around_action.">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← HtmlToPdf</a></p>
+    <h1>The DoubleRenderError Trap: Rendering a Rails View to PDF</h1>
+    <p class="tagline">A design that passes a quick manual test and raises
+      <code>AbstractController::DoubleRenderError</code> on every single request once it meets a
+      real Rails app — and the one-line Rails internals detail that explains why.</p>
+  </header>
+
+  <h2>The design that looks reasonable</h2>
+  <p>
+    Say you want a controller action's own HTML, as a string, so you can convert it to a PDF. The
+    action hasn't run yet when a <code>before_action</code> fires, so a natural-looking approach is:
+    build a second instance of the same controller, copy the request/response/params onto it, call
+    the action method on that copy directly, copy its instance variables back onto the real
+    controller, then <code>render_to_string</code> the view using those variables:
+  </p>
+  <pre><code>def html_to_pdf
+  shadow = self.class.new
+  shadow.request  = request
+  shadow.response = response
+  shadow.params   = params
+  shadow.send(action_name)
+
+  shadow.instance_variables.each do |ivar|
+    instance_variable_set(ivar, shadow.instance_variable_get(ivar))
+  end
+
+  html = render_to_string(template: "#{controller_name}/#{action_name}")
+  send_data convert_to_pdf(html), disposition: "attachment"
+end</code></pre>
+  <p>
+    Called directly against a bare <code>ActionController::Base</code> instance in an isolated
+    script, this works. Run it as a real <code>before_action</code> against a real Rails dispatch,
+    and <code>send_data</code> raises <code>AbstractController::DoubleRenderError</code> —
+    <em>every single time</em> — before it ever gets a chance to send anything.
+  </p>
+
+  <h2>Why: <code>response=</code> is not a plain setter</h2>
+  <p>
+    <code>ActionController::Metal#response=</code> is documented, in Rails' own source, as:
+  </p>
+  <pre><code># Assign the response and mark it as committed. No further processing will
+# occur.
+def response=(response)
+  set_response!(response)
+
+  # Force `performed?` to return true:
+  @_response_body = true
+end</code></pre>
+  <p>
+    It isn't a generic attribute writer. Assigning a response is Rails' own signal that this
+    controller instance should be treated as already-rendered — <code>@_response_body = true</code>
+    is set unconditionally, the instant you assign it. <code>shadow.response = response</code> in
+    the design above does exactly that to the <em>shadow</em> instance. Harmless on its own — the
+    shadow is thrown away — except for the very next step:
+  </p>
+  <pre><code>shadow.instance_variables.each do |ivar|
+  instance_variable_set(ivar, shadow.instance_variable_get(ivar))
+end</code></pre>
+  <p>
+    <code>shadow.instance_variables</code> includes every ivar Rails itself uses internally, not
+    just the ones the action set — <code>@_response_body</code> among them, now <code>true</code>.
+    Copying it back onto the real controller sets <em>its</em> <code>@_response_body</code> to
+    <code>true</code> too. <code>performed?</code> (<code>response_body || response.committed?</code>)
+    now returns true on the real controller, before <code>send_data</code> ever runs. And
+    <code>ActionController::Rendering#render</code> — which <code>send_data</code> calls
+    internally — starts with exactly one guard:
+  </p>
+  <pre><code>def render(*args)
+  raise ::AbstractController::DoubleRenderError if response_body
+  super
+end</code></pre>
+  <p>
+    <code>response_body</code> is already truthy. The error fires immediately, on every request,
+    with a message about calling <code>render</code>/<code>redirect</code> twice — even though,
+    from the action's own code, it looks like <code>render</code> was never called at all.
+  </p>
+
+  <h2>Why a quick test doesn't catch it</h2>
+  <p>
+    Call the method directly against a bare controller instance — no real request dispatch, no
+    callback chain — and nothing ever sets <code>performed?</code> in the first place, because
+    nothing in that harness exercises Rails' actual callback/render machinery closely enough to
+    trip the guard. The bug is specifically about what <code>response=</code> does inside a real
+    <code>ActionController::Metal</code> object mid-dispatch; a script that merely calls the method
+    in isolation never puts the object in the state where that matters. It takes a real
+    <code>ActionDispatch</code> request — an integration test, or an actual HTTP request — to
+    surface it at all.
+  </p>
+  <p>
+    There's a second, quieter problem with the same design, visible without needing
+    <code>DoubleRenderError</code> at all: the shadow controller never ran any of the real
+    controller's <em>other</em> callbacks. A <code>before_action :set_record</code> declared
+    elsewhere in the chain never touches the shadow — so whatever instance variable it would have
+    set is simply absent when the view renders, silently, with no error to point at the cause.
+  </p>
+
+  <h2>The fix: <code>around_action</code>, not <code>before_action</code></h2>
+  <p>
+    The actual problem being solved is sequencing: "act after the action runs" from a hook that, as
+    a <code>before_action</code>, runs <em>before</em> it. An <code>around_action</code> solves
+    that directly — <code>yield</code> runs the rest of the callback chain and the real action, on
+    the real controller instance, in its normal place, with every other callback and instance
+    variable exactly as it would be for an ordinary request:
+  </p>
+  <pre><code>def html_to_pdf
+  return yield unless request.format == :pdf
+
+  original_format = request.format
+  request.format = :html   # so Rails' own implicit render resolves the .html template,
+  begin                    # not a .pdf one that doesn't exist
+    yield
+  ensure
+    request.format = original_format
+  end
+
+  html = render_to_string(template: "#{controller_name}/#{action_name}")
+  pdf_bytes = convert_to_pdf(html)
+
+  send_file_headers!(disposition: "attachment", filename: "export.pdf")
+  self.status = 200
+  self.response_body = pdf_bytes   # not send_data/render — see below
+end</code></pre>
+  <p>
+    Forcing <code>request.format</code> to <code>:html</code> around the <code>yield</code> matters
+    on its own: without it, Rails' implicit-render machinery tries to resolve a template for
+    whatever format the request actually came in as — <code>.pdf</code> — finds none, and raises
+    <code>ActionController::UnknownFormat</code> before the action's own render ever gets a chance
+    to happen. That discarded render is intentional; the real HTML capture is the explicit
+    <code>render_to_string</code> call afterward, once format is restored and every instance
+    variable the real chain set is in place.
+  </p>
+  <p>
+    One more wrinkle: the discarded <code>yield</code> render already set
+    <code>performed?</code> to true on the real controller (this time correctly — it rendered the
+    real template), and <code>self.response_body = nil</code> does <em>not</em> clear it back
+    (Rails' own <code>response_body=</code> only clears the Rack response body in the falsy branch,
+    not the internal <code>@_response_body</code> ivar <code>performed?</code> actually reads) —
+    so a second call to <code>render</code>/<code>send_data</code> would still raise
+    <code>DoubleRenderError</code>, correctly this time. The way out is the same either way: don't
+    call <code>render</code>/<code>send_data</code> again at all. Setting
+    <code>self.response_body =</code> directly (as above) sets the Rack response body and the
+    ivar together, without going through <code>render</code>'s guard a second time.
+  </p>
+
+  <h2>Further reading</h2>
+  <ul>
+    <li><a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/architecture.md#request-lifecycle">The full request lifecycle</a>
+      in HtmlToPdf's architecture docs, including where <code>BrowserPool</code> fits in.</li>
+    <li><a href="./headless-chrome-vs-wkhtmltopdf.html">Headless Chrome vs. wkhtmltopdf</a> — why
+      the rendering engine underneath this matters in the first place.</li>
+    <li><a href="./index.html">Back to HtmlToPdf</a>.</li>
+  </ul>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/htmlToPdf">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

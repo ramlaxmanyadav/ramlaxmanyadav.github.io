@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Choosing a Rails HTML-to-PDF Gem: HtmlToPdf vs. Grover vs. WickedPdf vs. Prawn</title>
+<meta name="description" content="A straight, contender-by-contender comparison of Rails PDF-generation gems: HtmlToPdf, Grover, WickedPdf/PDFKit, and Prawn — what each actually renders, what it depends on, and when each is the right pick.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Choosing a Rails HTML-to-PDF Gem: HtmlToPdf vs. Grover vs. WickedPdf vs. Prawn">
+<meta property="og:description" content="A straight, contender-by-contender comparison of Rails PDF-generation gems.">
+<meta property="og:url" content="https://ramlaxmanyadav.github.io/htmlToPdf/choosing-a-rails-pdf-gem.html">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Choosing a Rails HTML-to-PDF Gem: HtmlToPdf vs. Grover vs. WickedPdf vs. Prawn">
+<meta name="twitter:description" content="A straight, contender-by-contender comparison of Rails PDF-generation gems.">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  td:not(:first-child) { text-align: center; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← HtmlToPdf</a></p>
+    <h1>Choosing a Rails HTML-to-PDF Gem</h1>
+    <p class="tagline">HtmlToPdf vs. Grover vs. WickedPdf/PDFKit vs. Prawn — what each one actually
+      renders, what it depends on, and which question to ask before picking one.</p>
+  </header>
+
+  <p>
+    The first question is not "which gem" — it's "do I want to render my existing view, or build
+    the PDF's layout from scratch." Prawn is the only contender here that doesn't render HTML/CSS
+    at all; everything else in this comparison converts an HTML page, the difference is how.
+  </p>
+
+  <table>
+    <tr><th>Capability</th><th>HtmlToPdf</th><th>Grover</th><th>WickedPdf / PDFKit</th><th>Prawn</th></tr>
+    <tr><td>Renders existing HTML/CSS view</td><td>✓</td><td>✓</td><td>✓</td><td>— (own DSL)</td></tr>
+    <tr><td>Rendering engine</td><td>Chrome (CDP, direct)</td><td>Chrome (via Node/Puppeteer)</td><td>wkhtmltopdf</td><td>n/a</td></tr>
+    <tr><td>Modern CSS (flexbox/Grid)</td><td>✓</td><td>✓</td><td>—</td><td>n/a</td></tr>
+    <tr><td>Runtime outside Ruby</td><td>Chrome/Chromium</td><td>Chrome + Node.js + Puppeteer</td><td>wkhtmltopdf binary</td><td>none</td></tr>
+    <tr><td>Pooled/reused browser process</td><td>✓ (built in)</td><td>depends on setup</td><td>n/a (CLI per call)</td><td>n/a</td></tr>
+    <tr><td>Rails controller integration</td><td>built in (<code>around_action</code>)</td><td>manual</td><td>built in</td><td>manual</td></tr>
+    <tr><td>Precise pixel-level layout control</td><td>via CSS</td><td>via CSS</td><td>via CSS (limited)</td><td>✓ (direct PDF primitives)</td></tr>
+  </table>
+
+  <h2>HtmlToPdf</h2>
+  <p>
+    Headless Chrome driven directly over the DevTools protocol via
+    <a href="https://github.com/rubycdp/ferrum">ferrum</a> — no Node.js in the dependency chain.
+    One pooled browser process per Ruby process (see
+    <a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/architecture.md#browserpool">BrowserPool</a>),
+    each render in its own isolated context. Ships as an <code>around_action</code>, so other
+    callbacks and <code>rescue_from</code> work exactly as they would for a normal request — see
+    <a href="./rails-double-render-pdf.html">why that specific detail is harder to get right than it
+    looks</a>. The narrowest print-options surface of the HTML-rendering contenders here: every
+    option is a validated number/enum/boolean except header/footer templates, which are opt-in only
+    (see <a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/security.md">Security</a>).
+    Best fit if you want Chrome-quality rendering without adding Node.js to a pure-Ruby/Rails stack.
+  </p>
+
+  <h2>Grover</h2>
+  <p>
+    Also headless Chrome, via <a href="https://github.com/Studiosity/grover">Puppeteer</a> — which
+    means Node.js and the <code>puppeteer</code> npm package become real dependencies alongside the
+    Ruby gem, not just an implementation detail. If your deploy already runs a Node toolchain for
+    other reasons, that cost is close to zero; if it doesn't, it's a second language runtime to
+    install, patch, and reason about solely for PDF export. Puppeteer's own PDF generation API
+    (native header/footer templates, `waitUntil` semantics) is mature and well-documented
+    independent of Grover itself.
+  </p>
+
+  <h2>WickedPdf / PDFKit</h2>
+  <p>
+    Both wrap the wkhtmltopdf binary — see
+    <a href="./headless-chrome-vs-wkhtmltopdf.html">Headless Chrome vs. wkhtmltopdf</a> for what
+    that costs you in rendering fidelity (no flexbox/Grid, years-stale WebKit, an unmaintained
+    upstream project). The appeal is real, though: a single static binary is operationally simpler
+    to deploy than a full Chrome install, and for simple layouts — plain text, basic tables, no
+    modern CSS — the rendering gap may never actually surface. If your PDF output is that simple
+    and you'd rather not add a browser to your stack, this is a legitimate reason to stay.
+  </p>
+
+  <h2>Prawn</h2>
+  <p>
+    A fundamentally different tool, not a wkhtmltopdf/Chrome alternative: Prawn has no HTML/CSS
+    engine at all. It's a Ruby DSL for drawing PDF content directly — text blocks, tables, shapes,
+    positioned by hand. Choosing Prawn means writing your PDF's layout as Prawn code instead of
+    reusing an existing view, full stop; there's no middle ground where you point it at an ERB
+    template. The payoff is precision: exact pixel-level control over a PDF a browser-rendering
+    approach can only approximate through CSS. Right tool when the PDF's layout needs don't actually
+    match your HTML view's layout at all — a label sheet, a check, a precisely-gridded form — not
+    when the goal is "render this page as a PDF."
+  </p>
+
+  <h2>The actual decision</h2>
+  <ol>
+    <li>Need the PDF to look exactly like an existing, CSS-styled view? Rule out Prawn immediately
+      — it can't do that by design.</li>
+    <li>Want Chrome-quality rendering without adding Node.js to the stack? HtmlToPdf.</li>
+    <li>Already running Node.js/Puppeteer for other reasons, or specifically want Puppeteer's own
+      PDF API? Grover.</li>
+    <li>PDF output is simple enough that wkhtmltopdf's rendering gap won't matter, and a single
+      static binary beats a Chrome install for your deploy? WickedPdf/PDFKit.</li>
+    <li>Need pixel-exact control a CSS layout can't give you — labels, checks, precisely-gridded
+      forms? Prawn, writing the layout directly.</li>
+  </ol>
+
+  <h2>Further reading</h2>
+  <ul>
+    <li><a href="./headless-chrome-vs-wkhtmltopdf.html">Headless Chrome vs. wkhtmltopdf</a> — the
+      rendering-engine case in full.</li>
+    <li><a href="./rails-double-render-pdf.html">The DoubleRenderError trap</a> — the Rails
+      callback-ordering detail that makes "just re-render the action" harder than it looks.</li>
+    <li><a href="./index.html">Back to HtmlToPdf</a>.</li>
+  </ul>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/htmlToPdf">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

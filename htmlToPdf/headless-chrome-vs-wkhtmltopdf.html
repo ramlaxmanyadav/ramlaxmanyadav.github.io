@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Headless Chrome vs. wkhtmltopdf for Rails PDF Generation — HtmlToPdf</title>
+<meta name="description" content="Why wkhtmltopdf's frozen WebKit build is the wrong foundation for Rails PDF generation in 2026, what headless Chrome actually buys you, and what changes operationally when you switch.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Headless Chrome vs. wkhtmltopdf for Rails PDF Generation">
+<meta property="og:description" content="Why wkhtmltopdf's frozen WebKit build is the wrong foundation for Rails PDF generation in 2026, and what headless Chrome actually buys you.">
+<meta property="og:url" content="https://ramlaxmanyadav.github.io/htmlToPdf/headless-chrome-vs-wkhtmltopdf.html">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Headless Chrome vs. wkhtmltopdf for Rails PDF Generation">
+<meta name="twitter:description" content="Why wkhtmltopdf's frozen WebKit build is the wrong foundation for Rails PDF generation in 2026, and what headless Chrome actually buys you.">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← HtmlToPdf</a></p>
+    <h1>Headless Chrome vs. wkhtmltopdf for Rails PDF Generation</h1>
+    <p class="tagline">wkhtmltopdf has been the default answer for "render this Rails view as a
+      PDF" for over a decade. It's also been quietly falling behind for most of that time.</p>
+  </header>
+
+  <h2>What wkhtmltopdf actually is</h2>
+  <p>
+    wkhtmltopdf wraps a specific, frozen snapshot of WebKit — Qt WebKit, not the WebKit that ships
+    in current Safari — compiled into a standalone binary your app shells out to. That snapshot
+    predates widespread flexbox support, has no CSS Grid, and its font/subpixel rendering reflects
+    whatever WebKit looked like when that build was cut. The upstream project has had no meaningful
+    release in years. None of this is a bug you can file — it's the nature of shipping a frozen
+    rendering engine as a binary dependency.
+  </p>
+  <p>
+    Practically, this shows up as: a flexbox layout that renders fine in every browser your users
+    actually use, but collapses or misaligns in the PDF; a CSS Grid layout that doesn't render at
+    all; a custom web font that falls back silently; print-specific CSS (<code>@page</code>,
+    <code>break-inside</code>) that wkhtmltopdf only partially honors. The workaround is almost
+    always the same: maintain a second, simplified stylesheet just for the PDF path, duplicating
+    layout logic you already wrote once for the browser.
+  </p>
+
+  <h2>What headless Chrome changes</h2>
+  <p>
+    Headless Chrome is not a specialized "PDF rendering mode" — it's the same Chromium rendering
+    engine your users already browse the app with, running without a visible window, driven over
+    the Chrome DevTools Protocol (CDP). <code>Page.printToPDF</code> is a real, maintained CDP
+    command Google ships and tests as part of Chrome itself, not a third-party reimplementation of
+    "what a browser does." Flexbox, Grid, custom fonts, and print-specific CSS all render the way
+    they actually look in a browser, because the thing generating the PDF <em>is</em> a browser.
+  </p>
+  <p>
+    This is also why <a href="./rails-double-render-pdf.html">the Rails integration details</a>
+    matter more than they would for a simpler wkhtmltopdf shell-out: CDP gives you a real
+    programmatic surface — navigate, wait for load, print — instead of "invoke a binary and hope,"
+    which is what makes a pooled, reusable browser process (see
+    <a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/architecture.md#browserpool">BrowserPool</a>)
+    both possible and worth doing.
+  </p>
+
+  <h2>What you give up</h2>
+  <p>
+    <strong>The dependency gets heavier, not lighter.</strong> wkhtmltopdf is a single static
+    binary; Chrome/Chromium is a full browser install — tens to a few hundred megabytes depending
+    on the base image, more moving parts (shared libraries, fonts, sandboxing), and in a Docker
+    image running as root, an explicit <code>--no-sandbox</code> flag Chrome otherwise refuses to
+    start without. None of this is exotic — it's the same Chrome install your end-to-end test suite
+    probably already needs if you use Capybara/Selenium/Cuprite — but it is a real operational line
+    item a wkhtmltopdf binary never was. See
+    <a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/rails-integration.md#production-deployment-chrome-in-docker">Chrome in Docker</a>
+    for the actual install step.
+  </p>
+  <p>
+    <strong>A page costs more to render.</strong> Launching Chrome takes on the order of hundreds of
+    milliseconds — negligible once, expensive per request. A pooled, long-lived browser process
+    (one per Ruby process, not one per request) amortizes that cost away for the common case, at
+    the cost of a shared resource every thread in that process now has: a single pathological page
+    can tie it up for everyone until Chrome's own timeout fires.
+  </p>
+
+  <h2>When wkhtmltopdf is still fine</h2>
+  <p>
+    If your PDF output is simple — plain text, a basic table, no flexbox/Grid, no custom web
+    fonts — wkhtmltopdf's rendering gap may never actually bite you, and a single static binary is
+    genuinely simpler to deploy than a browser. The switch matters most exactly when your PDF
+    output needs to look like a modern web page, because that's precisely the case a decade-old
+    frozen WebKit build was never going to handle well.
+  </p>
+
+  <h2>Further reading</h2>
+  <ul>
+    <li><a href="./rails-double-render-pdf.html">The DoubleRenderError trap</a> — the Rails
+      internals reason this has to be wired up as an <code>around_action</code>, not a
+      <code>before_action</code>.</li>
+    <li><a href="./choosing-a-rails-pdf-gem.html">Choosing a Rails HTML-to-PDF gem</a> — HtmlToPdf
+      vs. Grover vs. WickedPdf vs. Prawn, head to head.</li>
+    <li><a href="./index.html">Back to HtmlToPdf</a>.</li>
+  </ul>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/htmlToPdf">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

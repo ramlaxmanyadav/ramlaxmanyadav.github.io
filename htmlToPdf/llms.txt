@@ -1,0 +1,92 @@
+# HtmlToPdf — Rails Controller Actions to PDF via Headless Chrome
+
+> HtmlToPdf renders any Rails controller action to a downloadable PDF exactly as the browser would
+> — real CSS, real layout, real fonts — via a pooled headless Chrome instance (driven over the
+> Chrome DevTools Protocol through the `ferrum` gem) instead of an abandoned wkhtmltopdf binary.
+> Wire-up is `include HtmlToPdf` + `around_action :html_to_pdf` on a controller; it only takes over
+> when the request's format is `pdf`, leaving every other request untouched.
+
+It's a real `around_action`, not a `before_action` that re-renders the action on a throwaway
+controller instance — every other callback, instance variable, and `rescue_from` behaves exactly
+as it would for an ordinary request. See "Guides" below for the Rails internals reason that
+distinction matters.
+
+## Getting started
+
+- [README](https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/README.md): installation,
+  wiring, the full `pdf_options`/`print_options` reference, and configuration.
+- [llms-full.txt](https://ramlaxmanyadav.github.io/htmlToPdf/llms-full.txt): this file plus the
+  complete content of the README and the architecture/Rails-integration/security docs,
+  concatenated into one fetch — for agents that prefer a single request over following links.
+- [gemspec](https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/htmlToPdf.gemspec): gem
+  metadata, version, and dependency bounds.
+- [CHANGELOG](https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/CHANGELOG.md): what shipped
+  in each version.
+
+## Documentation
+
+- [Architecture](https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/architecture.md):
+  why headless Chrome instead of wkhtmltopdf, the full request lifecycle (sequence diagram), the
+  `BrowserPool` design (one Chrome process per Ruby process, isolated context per render), and the
+  `print_options` precedence/validation model.
+- [HtmlToPdf in Rails](https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/rails-integration.md):
+  callback ordering, a custom layout/filename per request, Chrome in Docker, and the `asset_host`
+  gotcha that leaves a PDF unstyled with no error anywhere.
+- [Security](https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/security.md): exactly
+  what's safe to expose on a public action — the validated print-options surface, why
+  `header_template`/`footer_template` are opt-in only, and the `javascript_delay` cap.
+
+## Guides
+
+- [Headless Chrome vs. wkhtmltopdf for Rails PDF generation](https://ramlaxmanyadav.github.io/htmlToPdf/headless-chrome-vs-wkhtmltopdf.html):
+  why an unmaintained, years-frozen WebKit build is the wrong foundation in 2026, and what actually
+  changes — and what it costs — when you switch to a real, currently-maintained browser engine.
+- [The DoubleRenderError trap: rendering a Rails view to PDF](https://ramlaxmanyadav.github.io/htmlToPdf/rails-double-render-pdf.html):
+  the exact Rails internals reason (`ActionController::Metal#response=` marking a controller as
+  already-rendered) a before_action-based "rebuild the controller and re-run the action" design
+  raises `DoubleRenderError` in a real app but not in a quick isolated test, and why the fix has to
+  be an `around_action`.
+- [Choosing a Rails HTML-to-PDF gem](https://ramlaxmanyadav.github.io/htmlToPdf/choosing-a-rails-pdf-gem.html):
+  HtmlToPdf vs. Grover vs. WickedPdf/PDFKit vs. Prawn, contender by contender.
+
+## Quick start
+
+```ruby
+# Gemfile
+gem "htmlToPdf"
+```
+
+```ruby
+class ApplicationController < ActionController::Base
+  include HtmlToPdf
+  around_action :html_to_pdf
+end
+```
+
+```erb
+<%= link_to "Download PDF", invoice_path(@invoice, format: :pdf, pdf_options: {
+  title: "invoice-#{@invoice.number}",
+  layout: "pdf"
+}) %>
+```
+
+## What it does
+
+- Renders the controller's real view — the same template and (by default) the same layout the app
+  already serves for an HTML request, not a separate PDF-specific template.
+- One pooled `Ferrum::Browser` process per Ruby process, lazily started, auto-restarted if Chrome
+  crashes; each conversion gets its own isolated browser context.
+- Chrome's full print-to-PDF surface: landscape/portrait, named paper sizes or explicit
+  width/height (numbers or unit strings — `mm`/`cm`/`in`/`px`), margins, scale, page ranges,
+  header/footer templates, a `javascript_delay` for content that renders asynchronously.
+- A narrow, validated `print_options` surface — every option is a checked number/enum/boolean
+  except `header_template`/`footer_template` (raw HTML), which are filtered out of
+  request-supplied options unless `config.allow_request_templates` is explicitly enabled.
+- Runtime dependency: `ferrum` only (plus `activesupport`, already present in any Rails app) — no
+  Node.js, no Puppeteer.
+
+## Links
+
+- [GitHub repo](https://github.com/ramlaxmanyadav/htmlToPdf)
+- [RubyGems](https://rubygems.org/gems/htmlToPdf)
+- [This site's index](https://ramlaxmanyadav.github.io/htmlToPdf/)

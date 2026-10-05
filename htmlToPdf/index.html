@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HtmlToPdf — Rails Controller Actions to PDF via Headless Chrome</title>
+<meta name="description" content="HtmlToPdf renders any Rails controller action to a downloadable PDF exactly as the browser would — real CSS, real layout, real fonts — via a pooled headless Chrome instance instead of an abandoned wkhtmltopdf binary.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<meta property="og:type" content="website">
+<meta property="og:title" content="HtmlToPdf — Rails Controller Actions to PDF via Headless Chrome">
+<meta property="og:description" content="Render any Rails view to PDF exactly as the browser would, via a pooled headless Chrome instance instead of an abandoned wkhtmltopdf binary.">
+<meta property="og:url" content="https://ramlaxmanyadav.github.io/htmlToPdf/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="HtmlToPdf — Rails Controller Actions to PDF via Headless Chrome">
+<meta name="twitter:description" content="Render any Rails view to PDF exactly as the browser would, via a pooled headless Chrome instance instead of an abandoned wkhtmltopdf binary.">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  h1 { font-size: 1.9rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  .badges { margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .badges a { text-decoration: none; }
+  .badge {
+    display: inline-block; font-size: 0.78rem; font-weight: 600; padding: 0.3rem 0.7rem;
+    border-radius: 999px; background: #eef2ff; color: #3730a3; border: 1px solid #e0e7ff;
+  }
+  h2 { font-size: 1.15rem; margin-top: 2.5rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a {
+    color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem;
+  }
+  .links a:hover { text-decoration: underline; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  td:not(:first-child) { text-align: center; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Render any Rails view to PDF, exactly as the browser sees it.</h1>
+    <p class="tagline">A pooled headless Chrome instance instead of an abandoned wkhtmltopdf
+      binary — real CSS, real layout, real fonts, no separate renderer to compile or package.</p>
+    <div class="badges">
+      <a href="https://rubygems.org/gems/htmlToPdf"><span class="badge">gem install htmlToPdf</span></a>
+      <a href="https://github.com/ramlaxmanyadav/htmlToPdf"><span class="badge">MIT licensed</span></a>
+      <a href="https://github.com/ramlaxmanyadav/htmlToPdf"><span class="badge">GitHub</span></a>
+    </div>
+  </header>
+
+  <p>
+    <strong>Any controller action. The same view. A PDF instead of HTML.</strong> HtmlToPdf renders
+    the exact view your app already has — the same ERB, the same CSS, the same layout — and
+    converts it with real headless Chrome instead of wkhtmltopdf's years-out-of-date, unmaintained
+    WebKit build. Flexbox, CSS Grid, and modern fonts render the way they actually look in a
+    browser, because it <em>is</em> a browser.
+  </p>
+
+  <pre><code>gem install htmlToPdf</code></pre>
+
+  <pre><code>class ApplicationController < ActionController::Base
+  include HtmlToPdf
+  around_action :html_to_pdf
+end</code></pre>
+
+  <pre><code>&lt;%= link_to "Download PDF", invoice_path(@invoice, format: :pdf) %&gt;</code></pre>
+
+  <h2>What it does</h2>
+  <ul>
+    <li><strong>Renders your real view</strong> — not a separate PDF template, the same `.html.erb`
+      your app already serves, through the same layout (or a dedicated one via
+      <code>pdf_options[:layout]</code>).</li>
+    <li><strong>One pooled Chrome process</strong> per Ruby process, not one spawned per request —
+      each conversion gets its own isolated browser context, automatically restarted if Chrome
+      crashes.</li>
+    <li><strong>A real <code>around_action</code></strong>, not a before_action that quietly
+      re-runs your action on a throwaway controller — every other callback, instance variable, and
+      <code>rescue_from</code> works exactly like it does for an ordinary request.</li>
+    <li><strong>Chrome's full print-to-PDF surface</strong> — margins, paper size, landscape, scale,
+      page ranges, header/footer templates, a configurable delay for async content.</li>
+    <li><strong>A narrow, validated options surface</strong> — every print option is a checked
+      number/enum/boolean except header/footer templates (raw HTML), which are opt-in only, not
+      request-controllable by default.</li>
+  </ul>
+
+  <h2>How it compares</h2>
+  <table>
+    <tr><th>Capability</th><th>HtmlToPdf</th><th>WickedPdf / PDFKit</th><th>Grover</th><th>Prawn</th></tr>
+    <tr><td>Renders your existing view</td><td>✓</td><td>✓</td><td>✓</td><td>— (own DSL)</td></tr>
+    <tr><td>Rendering engine</td><td>Chrome (current)</td><td>wkhtmltopdf (unmaintained)</td><td>Chrome via Puppeteer</td><td>n/a</td></tr>
+    <tr><td>Modern CSS (flexbox/Grid)</td><td>✓</td><td>—</td><td>✓</td><td>n/a</td></tr>
+    <tr><td>Extra runtime needed</td><td>Chrome/Chromium only</td><td>wkhtmltopdf binary</td><td>Chrome + Node.js + Puppeteer</td><td>none</td></tr>
+    <tr><td>Pooled browser (no per-request spawn)</td><td>✓</td><td>n/a</td><td>depends on setup</td><td>n/a</td></tr>
+    <tr><td><code>around_action</code>-safe callback ordering</td><td>✓</td><td>varies</td><td>varies</td><td>n/a</td></tr>
+  </table>
+  <p>
+    Full breakdown in
+    <a href="./choosing-a-rails-pdf-gem.html">Choosing a Rails HTML-to-PDF gem</a>.
+  </p>
+
+  <h2>Guides</h2>
+  <ul>
+    <li><a href="./headless-chrome-vs-wkhtmltopdf.html">Headless Chrome vs. wkhtmltopdf for Rails
+      PDF generation</a> — why an unmaintained WebKit snapshot is the wrong foundation in 2026, and
+      what actually changes when you switch.</li>
+    <li><a href="./rails-double-render-pdf.html">The DoubleRenderError trap: rendering a Rails view
+      to PDF</a> — the non-obvious Rails internals reason a before_action that re-renders a view
+      crashes in a real app but not in a quick test, and why it has to be an
+      <code>around_action</code>.</li>
+    <li><a href="./choosing-a-rails-pdf-gem.html">Choosing a Rails HTML-to-PDF gem: HtmlToPdf vs.
+      Grover vs. WickedPdf vs. Prawn</a> — a straight, contender-by-contender comparison.</li>
+  </ul>
+
+  <h2>Links</h2>
+  <div class="links">
+    <a href="https://github.com/ramlaxmanyadav/htmlToPdf">GitHub repo</a>
+    <a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/README.md">Full README</a>
+    <a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/architecture.md">Architecture docs</a>
+    <a href="https://rubygems.org/gems/htmlToPdf">RubyGems</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/htmlToPdf">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>
