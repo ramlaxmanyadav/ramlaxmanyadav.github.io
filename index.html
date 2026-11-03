@@ -153,6 +153,7 @@
   .card:nth-child(3){--accent:#38bdf8;--accent-soft:rgba(56,189,248,.16);}
   .card:nth-child(4){--accent:#fb7185;--accent-soft:rgba(251,113,133,.16);}
   .card:nth-child(5){--accent:#34d399;--accent-soft:rgba(52,211,153,.16);}
+  .card:nth-child(6){--accent:#f97316;--accent-soft:rgba(249,115,22,.16);}
 
   .card-icon{
     width:44px;height:44px;border-radius:12px;background:var(--accent-soft);color:var(--accent);
@@ -185,6 +186,7 @@
   .grid .card:nth-child(3){transition-delay:.14s;}
   .grid .card:nth-child(4){transition-delay:.2s;}
   .grid .card:nth-child(5){transition-delay:.26s;}
+  .grid .card:nth-child(6){transition-delay:.32s;}
 
   @media (max-width:900px){
     .hero{grid-template-columns:1fr;min-height:auto;padding:40px 0 56px;gap:40px;}
@@ -226,7 +228,7 @@
           <a class="btn btn-ghost" href="https://github.com/ramlaxmanyadav" target="_blank" rel="noopener">View GitHub profile</a>
         </div>
         <div class="stats">
-          <div><strong>5</strong><span>Projects</span></div>
+          <div><strong>6</strong><span>Projects</span></div>
           <div><strong>100%</strong><span>Open source</span></div>
           <div><strong>Ruby</strong><span>&amp; Rails</span></div>
         </div>
@@ -324,6 +326,21 @@
             <a href="https://rubygems.org/gems/scryer" target="_blank" rel="noopener">RubyGems</a>
           </div>
         </article>
+
+        <article class="card reveal">
+          <a class="card-stretch" href="https://github.com/ramlaxmanyadav/argus-tty" target="_blank" rel="noopener" aria-label="Open argus-tty on GitHub"></a>
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m8 9 3 3-3 3"/><path d="M13 15h3"/></svg>
+          </div>
+          <h3>argus-tty</h3>
+          <p class="card-tag">Tiered Linux accounts for shared hosts</p>
+          <p class="card-desc">Sets up developer/deployer/admin Linux account tiers on a shared Ubuntu host, with a per-subcommand sudoers whitelist that tools like Bosun build on — no personal sudo access required.</p>
+          <ul class="chips"><li>Ubuntu</li><li>Access Control</li><li>apt / PPA</li></ul>
+          <div class="card-links">
+            <a href="https://github.com/ramlaxmanyadav/argus-tty" target="_blank" rel="noopener">GitHub →</a>
+            <a href="bosun/index.html">Used by Bosun</a>
+          </div>
+        </article>
       </div>
     </section>
   </main>
@@ -349,7 +366,7 @@
     var typeEl = document.getElementById('typewriter');
     var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (typeEl) {
-      var cmds = ['gem install scryer','gem install butler-http','bosun deploy production','gem install argus-trail','gem install htmltopdf'];
+      var cmds = ['gem install scryer','gem install butler-http','bosun deploy production','gem install argus-trail','sudo apt install argus-tty','gem install htmltopdf'];
       if (reduceMotion) {
         typeEl.textContent = cmds[0];
       } else {
