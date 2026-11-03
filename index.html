@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ram Laxman Yadav — Rails Tooling &amp; Open Source</title>
+<meta name="description" content="Open-source Rails tooling by Ram Laxman Yadav: RBAC &amp; audit trails, multi-tenant deployment, a Fiber-native HTTP client, headless-Chrome PDF rendering, and static security analysis.">
+<meta name="theme-color" content="#090c12">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Ram Laxman Yadav — Rails Tooling &amp; Open Source">
+<meta property="og:description" content="Five focused, production-grade Rails tools — deployment, access control, HTTP, PDF rendering, and security.">
+<meta property="og:url" content="https://ramlaxmanyadav.github.io/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23090c12'/%3E%3Ctext x='50' y='68' font-size='54' font-family='monospace,sans-serif' fill='%2334d399' text-anchor='middle'%3E%3E_%3C/text%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#090c12;
+    --surface:rgba(255,255,255,0.045);
+    --surface-hover:rgba(255,255,255,0.075);
+    --border:rgba(255,255,255,0.09);
+    --border-hover:rgba(255,255,255,0.2);
+    --text:#e8edf4;
+    --text-dim:#8d97a8;
+    --text-dimmer:#5c6577;
+    --accent-a:#34d399;
+    --accent-b:#38bdf8;
+    --accent-c:#a78bfa;
+    --radius:16px;
+    --maxw:1180px;
+    --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--font-sans);
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  a{color:inherit;text-decoration:none;}
+
+  .bg-fx{position:fixed;inset:0;z-index:-1;overflow:hidden;background:var(--bg);}
+  .bg-fx::before,.bg-fx::after{
+    content:"";position:absolute;width:58vw;height:58vw;max-width:720px;max-height:720px;
+    border-radius:50%;filter:blur(100px);opacity:.28;will-change:transform;
+  }
+  .bg-fx::before{background:var(--accent-c);top:-18%;left:-12%;animation:drift1 24s ease-in-out infinite alternate;}
+  .bg-fx::after{background:var(--accent-b);bottom:-22%;right:-14%;animation:drift2 28s ease-in-out infinite alternate;}
+  .grid-overlay{
+    position:absolute;inset:0;
+    background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);
+    background-size:48px 48px;
+    -webkit-mask-image:radial-gradient(ellipse 80% 60% at 50% 0%,#000 30%,transparent 75%);
+    mask-image:radial-gradient(ellipse 80% 60% at 50% 0%,#000 30%,transparent 75%);
+  }
+  @keyframes drift1{from{transform:translate(0,0) scale(1);}to{transform:translate(9%,10%) scale(1.18);}}
+  @keyframes drift2{from{transform:translate(0,0) scale(1);}to{transform:translate(-9%,-9%) scale(1.12);}}
+
+  .site-header{
+    position:sticky;top:0;z-index:10;
+    display:flex;align-items:center;justify-content:space-between;
+    padding:18px 28px;
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+    background:rgba(9,12,18,.55);
+    border-bottom:1px solid var(--border);
+  }
+  .brand{font-family:var(--font-mono);font-weight:600;font-size:1.05rem;letter-spacing:.02em;}
+  .brand .dot{color:var(--accent-a);}
+  .site-header nav a{
+    font-size:.92rem;color:var(--text-dim);padding:8px 14px;border-radius:999px;
+    border:1px solid transparent;transition:color .2s ease,border-color .2s ease,background .2s ease;
+  }
+  .site-header nav a:hover{color:var(--text);border-color:var(--border);background:var(--surface);}
+
+  main{max-width:var(--maxw);margin:0 auto;padding:0 28px;}
+
+  .hero{
+    display:grid;grid-template-columns:1.15fr 1fr;gap:56px;align-items:center;
+    min-height:calc(100vh - 68px);padding:64px 0 80px;
+  }
+  .eyebrow{
+    font-family:var(--font-mono);font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--accent-a);margin:0 0 18px;
+  }
+  .hero h1{
+    font-size:clamp(2.1rem,4.4vw,3.4rem);line-height:1.12;margin:0 0 20px;font-weight:700;letter-spacing:-.01em;
+  }
+  .grad{
+    background:linear-gradient(100deg,var(--accent-a),var(--accent-b) 55%,var(--accent-c));
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .lede{color:var(--text-dim);font-size:1.05rem;max-width:46ch;margin:0 0 32px;}
+  .hero-cta{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:44px;}
+  .btn{
+    display:inline-flex;align-items:center;gap:8px;padding:12px 22px;border-radius:12px;
+    font-size:.95rem;font-weight:600;transition:transform .25s ease,box-shadow .25s ease,border-color .25s ease,background .25s ease;
+  }
+  .btn-primary{background:linear-gradient(100deg,var(--accent-a),var(--accent-b));color:#061018;}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 14px 28px -12px rgba(52,211,153,.45);}
+  .btn-ghost{border:1px solid var(--border);color:var(--text);}
+  .btn-ghost:hover{border-color:var(--border-hover);background:var(--surface);transform:translateY(-2px);}
+  .stats{display:flex;gap:36px;}
+  .stats div{display:flex;flex-direction:column;}
+  .stats strong{font-size:1.4rem;font-family:var(--font-mono);}
+  .stats span{font-size:.78rem;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:.06em;margin-top:2px;}
+
+  .hero-term{
+    background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:14px;overflow:hidden;
+    box-shadow:0 30px 60px -30px rgba(0,0,0,.6);
+  }
+  .term-bar{display:flex;gap:7px;padding:12px 14px;background:rgba(255,255,255,.04);border-bottom:1px solid var(--border);}
+  .term-bar span{width:11px;height:11px;border-radius:50%;background:var(--text-dimmer);opacity:.5;}
+  .term-bar span:nth-child(1){background:#ff5f56;opacity:.85;}
+  .term-bar span:nth-child(2){background:#ffbd2e;opacity:.85;}
+  .term-bar span:nth-child(3){background:#27c93f;opacity:.85;}
+  .term-body{padding:26px 22px;font-family:var(--font-mono);font-size:.92rem;min-height:140px;}
+  .term-body p{margin:0 0 10px;color:var(--text-dim);}
+  .prompt{color:var(--accent-a);}
+  #typewriter{color:var(--text);}
+  .cursor{display:inline-block;color:var(--accent-a);animation:blink 1s step-end infinite;}
+  @keyframes blink{50%{opacity:0;}}
+  .term-hint{color:var(--text-dimmer);font-size:.8rem;margin-top:18px !important;}
+
+  .section-title{font-size:1.8rem;margin:0 0 8px;font-weight:700;}
+  .section-sub{color:var(--text-dim);margin:0 0 40px;max-width:60ch;}
+  .projects{padding:20px 0 90px;}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:22px;}
+
+  .card{
+    position:relative;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    padding:28px;overflow:hidden;
+    transition:transform .35s cubic-bezier(.2,.8,.2,1),box-shadow .35s ease,border-color .35s ease,background .35s ease;
+  }
+  .card:hover{transform:translateY(-7px);background:var(--surface-hover);box-shadow:0 28px 50px -26px rgba(0,0,0,.55);}
+  .card::after{
+    content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;
+    background:linear-gradient(135deg,var(--accent),transparent 55%);
+    -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor;mask-composite:exclude;
+    opacity:0;transition:opacity .35s ease;pointer-events:none;
+  }
+  .card:hover::after{opacity:1;}
+
+  .card:nth-child(1){--accent:#a78bfa;--accent-soft:rgba(167,139,250,.16);}
+  .card:nth-child(2){--accent:#fbbf24;--accent-soft:rgba(251,191,36,.16);}
+  .card:nth-child(3){--accent:#38bdf8;--accent-soft:rgba(56,189,248,.16);}
+  .card:nth-child(4){--accent:#fb7185;--accent-soft:rgba(251,113,133,.16);}
+  .card:nth-child(5){--accent:#34d399;--accent-soft:rgba(52,211,153,.16);}
+
+  .card-icon{
+    width:44px;height:44px;border-radius:12px;background:var(--accent-soft);color:var(--accent);
+    display:flex;align-items:center;justify-content:center;margin-bottom:18px;
+    transition:transform .35s ease;
+  }
+  .card:hover .card-icon{transform:scale(1.08) rotate(-4deg);}
+  .card-icon svg{width:22px;height:22px;}
+  .card h3{margin:0 0 6px;font-size:1.18rem;}
+  .card-tag{margin:0 0 12px;color:var(--accent);font-size:.86rem;font-weight:600;}
+  .card-desc{margin:0 0 20px;color:var(--text-dim);font-size:.93rem;}
+  .chips{list-style:none;display:flex;flex-wrap:wrap;gap:8px;margin:0 0 22px;padding:0;}
+  .chips li{
+    font-family:var(--font-mono);font-size:.72rem;letter-spacing:.02em;color:var(--text-dim);
+    background:rgba(255,255,255,.04);border:1px solid var(--border);padding:4px 10px;border-radius:999px;
+  }
+  .card-links{display:flex;flex-wrap:wrap;gap:16px;border-top:1px solid var(--border);padding-top:16px;}
+  .card-links a{font-size:.86rem;font-weight:600;color:var(--text-dim);transition:color .2s ease;}
+  .card-links a:first-child{color:var(--text);}
+  .card-links a:hover{color:var(--accent);}
+
+  footer{border-top:1px solid var(--border);padding:32px 28px;text-align:center;color:var(--text-dimmer);font-size:.85rem;}
+  footer a{color:var(--text-dim);font-weight:600;}
+  footer a:hover{color:var(--accent-a);}
+
+  .reveal{opacity:0;transform:translateY(22px);transition:opacity .7s ease,transform .7s ease;}
+  .reveal.is-visible{opacity:1;transform:none;}
+  .grid .card:nth-child(1){transition-delay:.02s;}
+  .grid .card:nth-child(2){transition-delay:.08s;}
+  .grid .card:nth-child(3){transition-delay:.14s;}
+  .grid .card:nth-child(4){transition-delay:.2s;}
+  .grid .card:nth-child(5){transition-delay:.26s;}
+
+  @media (max-width:900px){
+    .hero{grid-template-columns:1fr;min-height:auto;padding:40px 0 56px;gap:40px;}
+    .stats{gap:24px;}
+  }
+  @media (max-width:520px){
+    .site-header{padding:14px 18px;}
+    main{padding:0 18px;}
+    .hero h1{font-size:2rem;}
+  }
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto;}
+    .bg-fx::before,.bg-fx::after{animation:none;}
+    .cursor{animation:none;}
+    .reveal{opacity:1;transform:none;transition:none;}
+    .card,.btn,.card-icon{transition:none;}
+  }
+</style>
+</head>
+<body>
+  <div class="bg-fx" aria-hidden="true"><div class="grid-overlay"></div></div>
+
+  <header class="site-header">
+    <a class="brand" href="#top">ramlaxman<span class="dot">.</span>dev</a>
+    <nav>
+      <a href="#projects">Projects</a>
+      <a href="https://github.com/ramlaxmanyadav" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero" id="top">
+      <div class="hero-text reveal">
+        <p class="eyebrow">Open-source &middot; Ruby &amp; Rails</p>
+        <h1>Infrastructure &amp; tooling<br>for <span class="grad">production-grade</span> Rails.</h1>
+        <p class="lede">Five focused tools covering deployment, access control, HTTP, PDF rendering, and security — each documented like a product, not an afterthought.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#projects">Browse projects</a>
+          <a class="btn btn-ghost" href="https://github.com/ramlaxmanyadav" target="_blank" rel="noopener">View GitHub profile</a>
+        </div>
+        <div class="stats">
+          <div><strong>5</strong><span>Projects</span></div>
+          <div><strong>100%</strong><span>Open source</span></div>
+          <div><strong>Ruby</strong><span>&amp; Rails</span></div>
+        </div>
+      </div>
+      <div class="hero-term reveal" aria-hidden="true">
+        <div class="term-bar"><span></span><span></span><span></span></div>
+        <div class="term-body">
+          <p><span class="prompt">$</span> <span id="typewriter"></span><span class="cursor">▌</span></p>
+          <p class="term-hint">// one gem at a time, since 2026</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="projects" id="projects">
+      <h2 class="section-title reveal">Projects</h2>
+      <p class="section-sub reveal">Each one ships with full reference docs, a walkthrough, and an admin-friendly setup.</p>
+
+      <div class="grid">
+        <article class="card reveal">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.4 8 11 4.6-2.6 8-6 8-11V5l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg>
+          </div>
+          <h3>Argus::Trail</h3>
+          <p class="card-tag">RBAC &amp; audit trail for Rails</p>
+          <p class="card-desc">A mountable Rails engine for configurable roles and module-wise permissions, plus a unified, immutable audit log of every role and permission change — plug-and-play, with an admin UI included.</p>
+          <ul class="chips"><li>Rails Engine</li><li>RBAC</li><li>Audit Log</li></ul>
+          <div class="card-links">
+            <a href="argus-trail/index.html">Docs →</a>
+            <a href="https://github.com/ramlaxmanyadav/argus-trail" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://rubygems.org/gems/argus-trail" target="_blank" rel="noopener">RubyGems</a>
+          </div>
+        </article>
+
+        <article class="card reveal">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><circle cx="7" cy="7" r=".6" fill="currentColor"/><circle cx="7" cy="17" r=".6" fill="currentColor"/></svg>
+          </div>
+          <h3>Bosun</h3>
+          <p class="card-tag">Multi-tenant Rails deployment CLI</p>
+          <p class="card-desc">A .deb-packaged CLI for deploying Rails apps on shared Ubuntu hosts — tiered developer/deployer/admin accounts, ACL-locked secrets, a shared per-app git deploy key, and automatic rollback. Zero new sudo privileges granted.</p>
+          <ul class="chips"><li>CLI</li><li>Deployment</li><li>Ubuntu</li></ul>
+          <div class="card-links">
+            <a href="bosun/index.html">Docs →</a>
+            <a href="https://github.com/ramlaxmanyadav/bosun" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/ramlaxmanyadav/bosun/releases" target="_blank" rel="noopener">Releases</a>
+          </div>
+        </article>
+
+        <article class="card reveal">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>
+          </div>
+          <h3>Butler</h3>
+          <p class="card-tag">Modern HTTP for modern Ruby</p>
+          <p class="card-desc">A Ruby HTTP client built for concurrent, resilient applications — Fiber-native concurrency, HTTP/1.1 and HTTP/2, and production-grade resilience (timeouts, retries, circuit breakers) in one client.</p>
+          <ul class="chips"><li>HTTP Client</li><li>Fibers</li><li>Ruby Gem</li></ul>
+          <div class="card-links">
+            <a href="butler-http/index.html">Docs →</a>
+            <a href="https://github.com/ramlaxmanyadav/butler-http" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://rubygems.org/gems/butler-http" target="_blank" rel="noopener">RubyGems</a>
+          </div>
+        </article>
+
+        <article class="card reveal">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M9.5 17.5h5M9.5 14h5"/></svg>
+          </div>
+          <h3>HtmlToPdf</h3>
+          <p class="card-tag">Controller actions to PDF</p>
+          <p class="card-desc">Renders any Rails controller action to a downloadable PDF exactly as the browser would — real CSS, real layout, real fonts — via a pooled headless Chrome instance instead of an abandoned wkhtmltopdf binary.</p>
+          <ul class="chips"><li>Headless Chrome</li><li>PDF</li><li>Rails</li></ul>
+          <div class="card-links">
+            <a href="htmlToPdf/index.html">Docs →</a>
+            <a href="https://github.com/ramlaxmanyadav/htmlToPdf" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://rubygems.org/gems/htmlToPdf" target="_blank" rel="noopener">RubyGems</a>
+          </div>
+        </article>
+
+        <article class="card reveal">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          </div>
+          <h3>Scryer</h3>
+          <p class="card-tag">Security auditing &amp; static analysis</p>
+          <p class="card-desc">An all-in-one security auditing and static analysis tool for Ruby on Rails applications — tells you what to fix first, across security, performance, dependencies, and code quality.</p>
+          <ul class="chips"><li>Security</li><li>Static Analysis</li><li>CI/CD</li></ul>
+          <div class="card-links">
+            <a href="scryer/index.html">Docs →</a>
+            <a href="https://github.com/ramlaxmanyadav/scryer" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://rubygems.org/gems/scryer" target="_blank" rel="noopener">RubyGems</a>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Built by <a href="https://github.com/ramlaxmanyadav" target="_blank" rel="noopener">Ram Laxman Yadav</a> · © 2026</p>
+  </footer>
+
+  <script>
+  (function(){
+    var els = document.querySelectorAll('.reveal');
+    if ('IntersectionObserver' in window) {
+      var io = new IntersectionObserver(function(entries){
+        entries.forEach(function(e){
+          if (e.isIntersecting) { e.target.classList.add('is-visible'); io.unobserve(e.target); }
+        });
+      }, {threshold:.15});
+      els.forEach(function(el){ io.observe(el); });
+    } else {
+      els.forEach(function(el){ el.classList.add('is-visible'); });
+    }
+
+    var typeEl = document.getElementById('typewriter');
+    var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (typeEl) {
+      var cmds = ['gem install scryer','gem install butler-http','bosun deploy production','gem install argus-trail','gem install htmltopdf'];
+      if (reduceMotion) {
+        typeEl.textContent = cmds[0];
+      } else {
+        var ci = 0, pos = 0, deleting = false;
+        (function tick(){
+          var full = cmds[ci];
+          if (!deleting) {
+            pos++;
+            typeEl.textContent = full.slice(0, pos);
+            if (pos === full.length) { deleting = true; setTimeout(tick, 1500); return; }
+          } else {
+            pos--;
+            typeEl.textContent = full.slice(0, pos);
+            if (pos === 0) { deleting = false; ci = (ci + 1) % cmds.length; }
+          }
+          setTimeout(tick, deleting ? 28 : 55);
+        })();
+      }
+    }
+  })();
+  </script>
+</body>
+</html>
