@@ -65,6 +65,7 @@
       of everyone's personal key, and app secrets locked to a single unprivileged service account,
       not a shared group.</p>
     <div class="badges">
+      <a href="./installing.html"><span class="badge">Launchpad PPA</span></a>
       <a href="https://github.com/ramlaxmanyadav/bosun/releases"><span class="badge">.deb package</span></a>
       <a href="https://github.com/ramlaxmanyadav/argus-tty"><span class="badge">argus-tty recommended</span></a>
       <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/LICENSE"><span class="badge">MIT licensed</span></a>
@@ -82,9 +83,14 @@
     whitelist — no new sudo privileges are ever granted to deploy an app.
   </p>
 
-  <pre><code>sudo apt install ./argus-tty_1.0.0_all.deb   # first — accounts, sudoers whitelist, webapps/rvm groups
-sudo apt install ./bosun_1.0.0_all.deb       # then bosun on top
-sudo bosun bootstrap                         # one time per host: RVM multi-user</code></pre>
+  <pre><code>sudo add-apt-repository ppa:yadavramlaxman/argus-tty && sudo add-apt-repository ppa:yadavramlaxman/bosun
+sudo apt update && sudo apt install argus-tty bosun   # or the .deb package — see Installing below
+sudo bosun bootstrap                                  # one time per host: RVM multi-user</code></pre>
+
+  <p style="font-size:0.9rem;color:#475569;">
+    Full install guide, including the <code>.deb</code>-package alternative and verifying the
+    install: <a href="./installing.html">Installing</a>.
+  </p>
 
   <p style="font-size:0.9rem;color:#475569;">
     No argus-tty? Skip the first line — bosun falls back to a single-operator
@@ -148,6 +154,8 @@ bosun deploy myapp main           # clone, build, symlink, restart, rollback-on-
 
   <h2>Documentation</h2>
   <ul>
+    <li><a href="./installing.html">Installing</a> — Launchpad PPA (recommended) or the
+      <code>.deb</code> package, install order, and verifying the install.</li>
     <li><a href="./walkthrough.html">Walkthrough: setting up a new app from scratch</a> — every
       command, real sample output, from a fresh host to a first deploy.</li>
     <li><a href="./permissions.html">Who can do what</a> — the developer/deployer/admin permission

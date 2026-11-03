@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Installing — Bosun</title>
+<meta name="description" content="Install order matters: argus-tty first (developer/admin accounts, the sudoers whitelist, the webapps/rvm groups), then bosun on top. Option A — Launchpad PPA (recommended) sudo add-apt-repository ppa:yadavramlaxman/argus-tty sudo add-apt-repository ppa:yadavramlaxman/bosun sudo a">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.75rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  blockquote {
+    margin: 1rem 0; padding: 0.6rem 1rem; border-left: 3px solid #c7d2fe;
+    background: #eef2ff; color: #3730a3; font-size: 0.92rem;
+  }
+  blockquote p { margin: 0.3rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Bosun</a></p>
+    <h1>Installing</h1>
+    <p class="tagline">Launchpad PPA (recommended) or the standalone <code>.deb</code> package — install order, verifying the install, and the standalone-mode fallback with no argus-tty.</p>
+  </header>
+
+  <p>Install order matters: argus-tty first (developer/admin accounts, the sudoers whitelist, the <code>webapps</code>/<code>rvm</code> groups), then bosun on top.</p>
+  <h2 id="option-a--launchpad-ppa-recommended">Option A — Launchpad PPA (recommended)</h2>
+  <pre><code>sudo add-apt-repository ppa:yadavramlaxman/argus-tty
+  sudo add-apt-repository ppa:yadavramlaxman/bosun
+  sudo apt update
+  sudo apt install argus-tty bosun</code></pre>
+  <p>Upgrades arrive via your regular <code>apt upgrade</code> instead of re-downloading a <code>.deb</code> by hand. See <a href="https://github.com/ramlaxmanyadav/argus-tty/blob/main/PACKAGING.md">argus-tty/PACKAGING.md</a> if you want to build and publish your own PPA instead of using these.</p>
+  <h2 id="option-b--the-deb-package">Option B — the <code>.deb</code> package</h2>
+  <pre><code>sudo apt install ./argus-tty_1.0.0_all.deb
+  sudo apt install ./bosun_1.0.0_all.deb</code></pre>
+  <p>Verify both landed correctly before provisioning any app:</p>
+  <pre><code>sudo argus-tty status   # confirm green
+  bosun version           # confirms `bosun` resolves its own helper scripts at all —
+                           # failing here means the .deb didn&#39;t lay files down where
+                           # `bosun` expects them to be</code></pre>
+  <p>bosun's own scripts (<code>add.sh</code>, <code>install</code>, <code>setup</code>, <code>do-release</code>, <code>release-cleanup</code>, <code>bootstrap</code>) source argus-tty's installed <code>/usr/lib/argus-tty/lib/common.sh</code> directly for the constants/helpers they need (<code>AT_WEBAPPS_ROOT</code>, <code>AT_WEBAPPS_GROUP</code>, <code>AT_RVM_ROOT</code>, <code>AT_WEBAPPS_SVC_USER</code>, <code>require_root</code>, <code>valid_username</code>, <code>info</code>/<code>warn</code>/ <code>error</code>) — a real cross-package dependency, not just a doc note.</p>
+  <p><strong>No argus-tty?</strong> Bosun falls back to a single-operator <strong>standalone mode</strong> instead of refusing to run — no tiers, no separate service account, every secret only as isolated as your one account's own permissions. This also works the other way: <code>sudo bosun mode standalone</code>/<code>argus-tty</code> lets you choose explicitly regardless of what's installed — force standalone on a box that happens to have argus-tty too, or require argus-tty strictly so bosun errors instead of silently degrading if it's ever removed by accident. Switching modes never touches an existing app's code or <code>shared/.env</code> content — see <a href="standalone.html">standalone mode</a> for the full tradeoff and the exact <code>bosun add</code>/<code>bosun restart</code> steps to apply a mode switch to apps already deployed.</p>
+  <p>Every developer, admin, and deployer account (managed by argus-tty) is automatically a member of a shared <code>webapps</code> group (and of <code>rvm</code>, if RVM is already installed on the box) — see argus-tty's <code>add-developer.sh</code>. This is what lets them create and edit application files without any sudo access, on top of argus-tty's existing whitelist model.</p>
+
+  <div class="links">
+    <a href="./index.html">Bosun overview</a>
+    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/README.md#installing">Edit on GitHub</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Bosun</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/bosun">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

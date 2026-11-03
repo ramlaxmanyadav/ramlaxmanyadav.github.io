@@ -29,6 +29,9 @@ everything — see [standalone mode](https://ramlaxmanyadav.github.io/bosun/stan
 
 ## Documentation
 
+- [installing](https://ramlaxmanyadav.github.io/bosun/installing.html): Launchpad PPA (recommended,
+  `ppa:yadavramlaxman/argus-tty` + `ppa:yadavramlaxman/bosun`) or the standalone `.deb` package,
+  install order, verifying the install, and the standalone-mode fallback with no argus-tty.
 - [walkthrough](https://ramlaxmanyadav.github.io/bosun/walkthrough.html): the full walkthrough —
   setting up a new app from scratch, every command, real sample output.
 - [permissions](https://ramlaxmanyadav.github.io/bosun/permissions.html): who can do what — the
