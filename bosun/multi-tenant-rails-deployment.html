@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Multi-Tenant Rails Deployment Without Root or a Personal SSH Key — Bosun</title>
+<meta name="description" content="How bosun lets several developers deploy the same Rails app without a shared root account or everyone's own SSH key on the git host — the developer/deployer/admin tier model and the shared per-app git deploy key, explained.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Bosun</a></p>
+    <h1>Multi-Tenant Rails Deployment Without Root or a Personal SSH Key</h1>
+    <p class="tagline">The developer/deployer/admin tier model argus-tty provides and bosun enforces,
+      and the shared per-app git deploy key that replaces everyone's own key.</p>
+  </header>
+
+  <p>
+    A single-developer deploy script doesn't need to think about "who is allowed to do this" — there's
+    one person, with one key, who can do everything. The moment a second developer, a dedicated
+    deployer (or a CI pipeline), and an admin all need <em>different</em> levels of access to the
+    <strong>same box</strong>, that assumption breaks, and most deploy tools don't try to fix it —
+    they assume you've solved it separately (a shared SSH key, a CI token with full access, everyone
+    just using sudo). Bosun is built specifically for the box that several real people share.
+  </p>
+
+  <h2>Three tiers, enforced per command</h2>
+  <p>
+    argus-tty (the package bosun depends on) manages three account tiers. Bosun's
+    <code>require_role()</code> checks every one of its own subcommands against the caller's active
+    session groups — not just sudoers, which only covers the handful of root-requiring calls
+    (<code>systemctl</code>, <code>apt-get</code>, <code>docker</code>). The actual clone/
+    <code>bundle install</code>/symlink/console work is plain Unix file permissions under the
+    <code>webapps</code> group, which every tier shares — without <code>require_role()</code>, a
+    deployer-only account could open a full Rails console (and every secret in it) just as easily as
+    a developer could run <code>deploy</code>, even though neither is supposed to.
+  </p>
+  <table>
+    <tr><th>Command</th><th>developer</th><th>deployer</th><th>admin</th></tr>
+    <tr><td><code>add</code> (provision an app)</td><td>—</td><td>—</td><td>root only</td></tr>
+    <tr><td><code>install</code> / <code>setup</code></td><td>✓</td><td>—</td><td>✓</td></tr>
+    <tr><td><code>run</code> (console/rake) / <code>logs</code></td><td>✓</td><td>—</td><td>✓</td></tr>
+    <tr><td><code>deploy</code> / <code>cleanup</code></td><td>—</td><td>✓</td><td>✓</td></tr>
+    <tr><td><code>version</code> (diagnostic, no secrets)</td><td>✓</td><td>✓</td><td>✓</td></tr>
+  </table>
+  <p>
+    A plain developer can't deploy or prune releases; a plain deployer can't open a console, run a
+    migration by hand, or install a new app's dependencies. Each tier gets exactly the access its job
+    needs — not everything, and not nothing.
+  </p>
+
+  <h2>One deploy key per app, not one per person</h2>
+  <p>
+    <code>deploy</code> needs to <code>git clone</code> the app's repo, which normally means SSH access
+    to that repo for whoever runs it. The usual answer — every admin/deployer using their own personal
+    key — means whitelisting N different keys on the git host, and losing access the moment someone's
+    key rotates or they're offboarded. <code>bosun add</code> generates <strong>one</strong> ed25519
+    keypair per app instead, and distributes an individually-owned <code>600</code> copy into every
+    current admin/deployer account's own <code>$HOME</code> automatically:
+  </p>
+  <pre><code>sudo bosun add myapp
+# ── Generated git deploy key for 'myapp' ──
+# Add this PUBLIC key as a read-only Deploy Key on 'myapp's git repo:
+#
+# ssh-ed25519 AAAA... bosun@myapp
+#
+# Distributed 'myapp' deploy key to 2 admin/deployer account(s).</code></pre>
+  <p>
+    One key, one place to revoke it (remove it from the git host's Deploy Keys), and
+    <strong>developers deliberately never get a copy</strong> — <code>require_role()</code> already
+    blocks a plain developer from running <code>deploy</code> at all, so handing them a readable copy
+    of the key anyway would be pure unnecessary exposure, especially since the same key is often what
+    a CI pipeline uses too, via a dedicated deployer account.
+  </p>
+
+  <h2>Onboarding a new person doesn't mean re-keying anything</h2>
+  <p>
+    Add the Linux account (<code>sudo argus-tty add alice ...</code>), then re-run
+    <code>sudo bosun add myapp</code> for each app they need — it backfills their copy of that app's
+    existing deploy key without regenerating it or touching anything already provisioned
+    (<code>.env</code>, <code>deploy.conf</code>, systemd units). Nothing on the git host ever needs
+    to change for a new team member.
+  </p>
+
+  <h2>Further reading</h2>
+  <div class="links">
+    <a href="./secrets-locked-to-one-service-account.html">Why secrets are locked to one service account</a>
+    <a href="./full-script-override-vs-hooks.html">A full script override instead of a hook DSL</a>
+    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/README.md">Full README</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Bosun</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/bosun">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

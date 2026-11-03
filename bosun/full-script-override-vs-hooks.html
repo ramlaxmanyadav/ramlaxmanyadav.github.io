@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>A Full Script Override Instead of a Hook DSL — Bosun</title>
+<meta name="description" content="Why bosun lets you customize a Rails deploy pipeline by copying and editing a real bash script (do-release.sample) instead of learning a hook/plugin DSL — what you get, what it can't grant you, and a worked example adding a custom worker.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Bosun</a></p>
+    <h1>A Full Script Override Instead of a Hook DSL</h1>
+    <p class="tagline">Why customizing a bosun deploy means copying and editing a real bash script,
+      not learning a plugin system — and a worked example swapping Sidekiq for a RabbitMQ consumer.</p>
+  </header>
+
+  <p>
+    Most deploy tools handle customization with hooks: <code>before_symlink</code>,
+    <code>after_deploy</code>, a chain of named callbacks you register into. That's a real DSL to
+    learn, with its own execution order and edge cases, for what's often a small, one-off need. Bosun
+    takes a different position: the built-in <code>do-release</code> manages exactly Puma + Sidekiq,
+    unconditionally, with no configuration knob for the common case — and when one specific app needs
+    something else, you don't configure around the edges, you copy the whole script and edit it.
+  </p>
+
+  <h2>How the override actually works</h2>
+  <pre><code>cp /usr/lib/bosun/deploy/do-release.sample /var/www/myapp/shared/do-release
+chmod +x /var/www/myapp/shared/do-release
+vi /var/www/myapp/shared/do-release        # it's your script now, edit freely</code></pre>
+  <p>
+    <code>bosun deploy myapp &lt;branch&gt;</code> checks for <code>shared/do-release</code> first and,
+    if it's present and executable, <code>exec</code>s that instead of the built-in default — for
+    <code>myapp</code> only; every other app on the box keeps using the default, untouched. Copied and
+    unedited, it behaves identically to the built-in script, so the first useful step after copying it
+    is deploying once with zero changes, to confirm the override wiring itself works before you start
+    customizing. If an app has no override at all (or one that exists but isn't executable), a recent
+    version of <code>do-release</code> prints a one-line, non-blocking warning and proceeds with the
+    built-in default anyway — a safety net against a forgotten <code>chmod +x</code>, not a hard stop.
+  </p>
+
+  <h2>What you actually get: real bash, same safety rails</h2>
+  <p>
+    This is a full replacement, not a hook — your script owns the entire deploy from the moment it's
+    invoked, so it can do anything a whitelisted developer/admin already can: different services,
+    extra build steps, a health check, a notification, running a worker via <code>docker</code>
+    instead of systemd. What it <strong>can't</strong> do is grant new privileges — every
+    <code>sudo</code> call your override makes is still checked against the exact same
+    developer/admin sudoers whitelist as everything else bosun does. Writing your own script doesn't
+    add to that whitelist; it only lets you rearrange what already fits inside it.
+  </p>
+
+  <h2>Worked example: swapping Sidekiq for a sneakers consumer</h2>
+  <p>
+    Developers/admins have no whitelisted way to create a new systemd unit file themselves — so a
+    third service needs either an admin to hand-create one (following the exact same template
+    <code>bosun add</code> uses for Puma/Sidekiq), or <code>docker</code> instead, which is already
+    fully whitelisted and needs no unit file at all:
+  </p>
+  <pre><code>sudo docker rm -f sneakers-myapp 2>/dev/null || true
+sudo docker run -d --name sneakers-myapp --restart unless-stopped \
+  -v "$APP_HOME/current:/app" -w /app --env-file "$ENV_FILE" \
+  your-ruby-image bundle exec rake sneakers:run</code></pre>
+  <p>
+    Then, in your <code>do-release</code> override: rename every <code>*_worker</code>
+    function/variable to match (e.g. <code>WORKER_UNIT</code> → the container/unit name), and swap the
+    <code>systemctl stop/start</code>/health-check calls for <code>docker stop/start/inspect</code>
+    wherever they appear. The rest of the pipeline — clone, build, symlink, rollback-on-failure,
+    cleanup — stays exactly as it was. Full walkthrough, including the systemd-unit path and the
+    logging convention every bosun-managed worker follows, in
+    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/custom-service.md">adding a custom
+    service</a>.
+  </p>
+
+  <h2>Further reading</h2>
+  <div class="links">
+    <a href="./multi-tenant-rails-deployment.html">Multi-tenant Rails deployment without root or a personal SSH key</a>
+    <a href="./secrets-locked-to-one-service-account.html">Why secrets are locked to one service account</a>
+    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/custom-service.md">Custom service docs</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Bosun</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/bosun">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

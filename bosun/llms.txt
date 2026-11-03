@@ -1,0 +1,103 @@
+# Bosun — Rails Deployment for Shared, Multi-Tenant Ubuntu Hosts
+
+> Bosun is a `.deb`-packaged CLI for deploying Rails apps on
+> [argus-tty](https://github.com/ramlaxmanyadav/argus-tty)-managed Ubuntu hosts. It solves a
+> different problem than Capistrano/Mina/Kamal: not "how do I clone, build, and restart" (every tool
+> answers that), but "how do several developers, a deployer, and an admin all deploy the same shared
+> box without a common root account, without everyone's personal SSH key on the git host, and without
+> every developer having standing read access to `DATABASE_URL`/`SECRET_KEY_BASE`."
+
+Three enforced account tiers (developer/deployer/admin, via argus-tty, checked per-subcommand by
+`require_role()`), secrets ACL-locked to a single unprivileged `webapp-svc` service account (not the
+shared `webapps` group), one git deploy key per app distributed to every admin/deployer instead of N
+personal keys, and a deploy pipeline (clone → bundle install → assets:precompile → symlink swap →
+restart → health check → automatic rollback → cleanup) with zero new sudo privileges granted beyond
+what argus-tty already whitelists.
+
+argus-tty is recommended, not required: without it, bosun falls back to a single-operator
+**standalone mode** automatically — no tiers, no separate service account, one account does
+everything — see [docs/standalone.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/standalone.md).
+
+## Getting started
+
+- [README](https://github.com/ramlaxmanyadav/bosun/blob/main/README.md): install order, the
+  developer/deployer/admin permission table, provisioning an app, the full setup-from-scratch
+  walkthrough, and every CLI subcommand.
+- [llms-full.txt](https://ramlaxmanyadav.github.io/bosun/llms-full.txt): this file plus the complete
+  content of the README and every `docs/*.md` file, concatenated into one fetch — for agents that
+  prefer a single request over following links.
+- [LICENSE](https://github.com/ramlaxmanyadav/bosun/blob/main/LICENSE): MIT.
+
+## Documentation
+
+- [docs/custom-service.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/custom-service.md):
+  adding a third service beyond the built-in Puma+Sidekiq pair (a sneakers/RabbitMQ consumer, Docker
+  instead of systemd, anything else) in bosun's own format — the exec-wrapper pattern, the systemd
+  unit template, and the one logging convention every bosun-managed worker follows.
+- [docs/systemd.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/systemd.md): exactly what
+  `bosun add` generates for Puma/Sidekiq, the shipped reference `.service`/`.socket` samples, and
+  optional socket activation.
+- [docs/crontab.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/crontab.md): the
+  `/etc/cron.d/<app>` format bosun generates, why scheduled tasks must run as `webapp-svc`, and how to
+  verify a job actually ran.
+- [docs/ruby-version.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/ruby-version.md):
+  changing an app's Ruby version — the install/deploy sequence, and how old-version cleanup stays safe
+  on a host where several apps share one RVM install.
+- [docs/standalone.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/standalone.md): running
+  bosun without argus-tty — what single-operator standalone mode changes, the `/etc/bosun.conf`
+  persisted-account file, and the security tradeoff it accepts.
+- [docs/nginx.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/nginx.md): reverse-proxying
+  to the Puma unix socket (bosun doesn't manage nginx itself).
+
+## Guides
+
+- [Why bosun locks secrets to one service account instead of a shared group or box-wide env](https://ramlaxmanyadav.github.io/bosun/secrets-locked-to-one-service-account.html):
+  the ACL model behind `shared/.env`, and why there's no `dotenv-rails` dependency anywhere in the
+  stack.
+- [Multi-tenant Rails deployment: deploying without root or a personal SSH key](https://ramlaxmanyadav.github.io/bosun/multi-tenant-rails-deployment.html):
+  the developer/deployer/admin tier model and the shared per-app git deploy key, explained.
+- [A full script override instead of a hook DSL](https://ramlaxmanyadav.github.io/bosun/full-script-override-vs-hooks.html):
+  why `do-release.sample` is plain bash you copy and edit, not a plugin system to learn, plus a
+  worked example swapping Sidekiq for a RabbitMQ consumer.
+
+## Quick start
+
+```bash
+# One time per host:
+sudo apt install ./argus-tty_1.0.0_all.deb
+sudo apt install ./bosun_1.0.0_all.deb
+sudo bosun bootstrap                   # installs RVM multi-user
+
+# One time per app:
+sudo bosun add myapp                   # provision /var/www/myapp, a shared deploy key, puma+sidekiq units
+vi /var/www/myapp/shared/deploy.conf   # RUBY_VERSION, RUBY_GEMSET, PROJECT_REPO_URL
+sudo vi /var/www/myapp/shared/.env     # DATABASE_URL, SECRET_KEY_BASE, RAILS_ENV
+bosun install myapp                    # ruby/gemset + OS build deps
+bosun setup myapp                      # releases/shared/config tree
+
+# Every deploy after that:
+bosun deploy myapp main
+```
+
+## Commands
+
+- `sudo bosun add <app-name>` — provision an app (root only).
+- `sudo bosun bootstrap` — RVM multi-user install, once per host (root only).
+- `bosun install <app-name>` — ruby/gemset + OS build deps (developer/admin).
+- `bosun setup <app-name>` — releases/shared/config tree (developer/admin).
+- `bosun deploy <app-name> <git-branch>` — the actual deploy, with automatic rollback (deployer/admin).
+- `bosun cleanup <app-name>` — prune old releases (deployer/admin; `deploy` also runs this
+  automatically).
+- `bosun restart <app-name>` — restart puma + sidekiq (deployer/admin).
+- `bosun run <rails-args...> <app-name>` — any `rails` command/task, env loaded via `shared/bin/run`
+  (developer/admin).
+- `bosun logs [-t] <app-name>` — show or follow an app's Rails logs (developer/admin).
+- `bosun version [app-name]` — bosun's own version, RVM's version, and (given an app) its configured
+  ruby/gemset — the one subcommand with no role restriction at all, since it exposes nothing
+  sensitive.
+
+## Links
+
+- [GitHub repo](https://github.com/ramlaxmanyadav/bosun)
+- [argus-tty](https://github.com/ramlaxmanyadav/argus-tty) (recommended — see docs/standalone.md for running without it)
+- [This site's index](https://ramlaxmanyadav.github.io/bosun/)

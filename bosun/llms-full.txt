@@ -1,0 +1,1229 @@
+# Bosun — Rails Deployment for Shared, Multi-Tenant Ubuntu Hosts
+
+> Bosun is a `.deb`-packaged CLI for deploying Rails apps on
+> [argus-tty](https://github.com/ramlaxmanyadav/argus-tty)-managed Ubuntu hosts. It solves a
+> different problem than Capistrano/Mina/Kamal: not "how do I clone, build, and restart" (every tool
+> answers that), but "how do several developers, a deployer, and an admin all deploy the same shared
+> box without a common root account, without everyone's personal SSH key on the git host, and without
+> every developer having standing read access to `DATABASE_URL`/`SECRET_KEY_BASE`."
+
+Three enforced account tiers (developer/deployer/admin, via argus-tty, checked per-subcommand by
+`require_role()`), secrets ACL-locked to a single unprivileged `webapp-svc` service account (not the
+shared `webapps` group), one git deploy key per app distributed to every admin/deployer instead of N
+personal keys, and a deploy pipeline (clone → bundle install → assets:precompile → symlink swap →
+restart → health check → automatic rollback → cleanup) with zero new sudo privileges granted beyond
+what argus-tty already whitelists.
+
+argus-tty is recommended, not required: without it, bosun falls back to a single-operator
+**standalone mode** automatically — no tiers, no separate service account, one account does
+everything — see [docs/standalone.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/standalone.md).
+
+## Getting started
+
+- [README](https://github.com/ramlaxmanyadav/bosun/blob/main/README.md): install order, the
+  developer/deployer/admin permission table, provisioning an app, the full setup-from-scratch
+  walkthrough, and every CLI subcommand.
+- [llms-full.txt](https://ramlaxmanyadav.github.io/bosun/llms-full.txt): this file plus the complete
+  content of the README and every `docs/*.md` file, concatenated into one fetch — for agents that
+  prefer a single request over following links.
+- [LICENSE](https://github.com/ramlaxmanyadav/bosun/blob/main/LICENSE): MIT.
+
+## Documentation
+
+- [docs/custom-service.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/custom-service.md):
+  adding a third service beyond the built-in Puma+Sidekiq pair (a sneakers/RabbitMQ consumer, Docker
+  instead of systemd, anything else) in bosun's own format — the exec-wrapper pattern, the systemd
+  unit template, and the one logging convention every bosun-managed worker follows.
+- [docs/systemd.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/systemd.md): exactly what
+  `bosun add` generates for Puma/Sidekiq, the shipped reference `.service`/`.socket` samples, and
+  optional socket activation.
+- [docs/crontab.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/crontab.md): the
+  `/etc/cron.d/<app>` format bosun generates, why scheduled tasks must run as `webapp-svc`, and how to
+  verify a job actually ran.
+- [docs/ruby-version.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/ruby-version.md):
+  changing an app's Ruby version — the install/deploy sequence, and how old-version cleanup stays safe
+  on a host where several apps share one RVM install.
+- [docs/standalone.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/standalone.md): running
+  bosun without argus-tty — what single-operator standalone mode changes, the `/etc/bosun.conf`
+  persisted-account file, and the security tradeoff it accepts.
+- [docs/nginx.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/nginx.md): reverse-proxying
+  to the Puma unix socket (bosun doesn't manage nginx itself).
+
+## Guides
+
+- [Why bosun locks secrets to one service account instead of a shared group or box-wide env](https://ramlaxmanyadav.github.io/bosun/secrets-locked-to-one-service-account.html):
+  the ACL model behind `shared/.env`, and why there's no `dotenv-rails` dependency anywhere in the
+  stack.
+- [Multi-tenant Rails deployment: deploying without root or a personal SSH key](https://ramlaxmanyadav.github.io/bosun/multi-tenant-rails-deployment.html):
+  the developer/deployer/admin tier model and the shared per-app git deploy key, explained.
+- [A full script override instead of a hook DSL](https://ramlaxmanyadav.github.io/bosun/full-script-override-vs-hooks.html):
+  why `do-release.sample` is plain bash you copy and edit, not a plugin system to learn, plus a
+  worked example swapping Sidekiq for a RabbitMQ consumer.
+
+## Quick start
+
+```bash
+# One time per host:
+sudo apt install ./argus-tty_1.0.0_all.deb
+sudo apt install ./bosun_1.0.0_all.deb
+sudo bosun bootstrap                   # installs RVM multi-user
+
+# One time per app:
+sudo bosun add myapp                   # provision /var/www/myapp, a shared deploy key, puma+sidekiq units
+vi /var/www/myapp/shared/deploy.conf   # RUBY_VERSION, RUBY_GEMSET, PROJECT_REPO_URL
+sudo vi /var/www/myapp/shared/.env     # DATABASE_URL, SECRET_KEY_BASE, RAILS_ENV
+bosun install myapp                    # ruby/gemset + OS build deps
+bosun setup myapp                      # releases/shared/config tree
+
+# Every deploy after that:
+bosun deploy myapp main
+```
+
+## Commands
+
+- `sudo bosun add <app-name>` — provision an app (root only).
+- `sudo bosun bootstrap` — RVM multi-user install, once per host (root only).
+- `bosun install <app-name>` — ruby/gemset + OS build deps (developer/admin).
+- `bosun setup <app-name>` — releases/shared/config tree (developer/admin).
+- `bosun deploy <app-name> <git-branch>` — the actual deploy, with automatic rollback (deployer/admin).
+- `bosun cleanup <app-name>` — prune old releases (deployer/admin; `deploy` also runs this
+  automatically).
+- `bosun restart <app-name>` — restart puma + sidekiq (deployer/admin).
+- `bosun run <rails-args...> <app-name>` — any `rails` command/task, env loaded via `shared/bin/run`
+  (developer/admin).
+- `bosun logs [-t] <app-name>` — show or follow an app's Rails logs (developer/admin).
+- `bosun version [app-name]` — bosun's own version, RVM's version, and (given an app) its configured
+  ruby/gemset — the one subcommand with no role restriction at all, since it exposes nothing
+  sensitive.
+
+## Links
+
+- [GitHub repo](https://github.com/ramlaxmanyadav/bosun)
+- [argus-tty](https://github.com/ramlaxmanyadav/argus-tty) (recommended — see docs/standalone.md for running without it)
+- [This site's index](https://ramlaxmanyadav.github.io/bosun/)
+
+---
+
+# Full documentation (concatenated)
+
+---
+
+# README.md
+
+# bosun
+
+Rails app deployment on top of [argus-tty](../argus-tty/)-managed hosts —
+a **separate `.deb` package**, not nested inside argus-tty's repo (it's a
+sibling directory). Its own `build-deb.sh`, its own `bosun` CLI, its
+own `packaging/DEBIAN/control` declaring `Depends: argus-tty`.
+
+## Installing
+
+Install order matters: argus-tty first (developer/admin accounts, the
+sudoers whitelist, the `webapps`/`rvm` groups), then bosun on top:
+
+```bash
+sudo apt install ./argus-tty_1.0.0_all.deb
+sudo apt install ./bosun_1.0.0_all.deb
+```
+
+Verify both landed correctly before provisioning any app:
+
+```bash
+sudo argus-tty status   # confirm green
+bosun version           # confirms `bosun` resolves its own helper scripts at all —
+                         # failing here means the .deb didn't lay files down where
+                         # `bosun` expects them to be
+```
+
+bosun's own scripts (`add.sh`, `install`, `setup`, `do-release`,
+`release-cleanup`, `bootstrap`) source argus-tty's installed
+`/usr/lib/argus-tty/lib/common.sh` directly for the constants/helpers they
+need (`AT_WEBAPPS_ROOT`, `AT_WEBAPPS_GROUP`, `AT_RVM_ROOT`,
+`AT_WEBAPPS_SVC_USER`, `require_root`, `valid_username`, `info`/`warn`/
+`error`) — a real cross-package dependency, not just a doc note.
+
+**No argus-tty?** Bosun falls back to a single-operator **standalone mode**
+instead of refusing to run — no tiers, no separate service account, every
+secret only as isolated as your one account's own permissions. See
+[docs/standalone.md](docs/standalone.md) before relying on it; it's a
+deliberately reduced security posture for one person on their own box, not
+a lighter-weight substitute for argus-tty on a shared one.
+
+Every developer, admin, and deployer account (managed by argus-tty) is
+automatically a member of a shared `webapps` group (and of `rvm`, if RVM is
+already installed on the box) — see argus-tty's `add-developer.sh`. This is
+what lets them create and edit application files without any sudo access, on
+top of argus-tty's existing whitelist model.
+
+## Who can do what
+
+argus-tty has three account tiers; bosun enforces which of its own
+subcommands each one can run (`require_role()` in `deployment/lib/common`,
+checked against the caller's *active* session groups):
+
+| Command                    | developer | deployer | admin |
+|-----------------------------|:---------:|:--------:|:-----:|
+| `add` (provision an app)    | —         | —        | root only |
+| `bootstrap` (RVM, one time)  | —         | —        | root only |
+| `install` / `setup`         | ✓         | —        | ✓     |
+| `run` (console/rake) / `logs` | ✓       | —        | ✓     |
+| `deploy` / `cleanup`        | —         | ✓        | ✓     |
+| `systemctl start/stop/restart` (via sudo) | ✓ | ✓ | ✓ |
+| `version` (bosun/RVM/app version info) | ✓ | ✓ | ✓ |
+
+A plain developer can't deploy; a plain deployer can't open a console, run
+rake, install deps, or tail logs. `version` is the one exception with no
+`require_role()` gate at all — it only prints bosun's own version, RVM's
+version, and (given an app name) that app's `deploy.conf` ruby/gemset,
+none of which is sensitive, so every tier can run it freely. This whole
+table only applies when argus-tty is actually installed — in
+[standalone mode](docs/standalone.md) `require_role()` always passes,
+since there's only one account to enforce tiers against in the first
+place. Sudoers only covers the root-requiring
+parts (`systemctl`, `apt-get`, `docker`) — the actual file access
+(clone/bundle install/symlink/console) is plain Unix permissions under the
+`webapps` group, which is why bosun's own `require_role()` check exists:
+without it, anyone in `webapps` could run any subcommand regardless of
+their argus-tty tier.
+
+`shared/.env` (app secrets) is a stricter boundary still: it's readable by
+root and, via a single named-user ACL grant, the `webapp-svc` service
+account only — **not** the `webapps` group, so developer and deployer
+accounts can't read or edit it directly even though they're both `webapps`
+members. Admin edits it with `sudo vi shared/.env` (full sudo already
+covers this, no extra grant needed). A developer still gets a **working**
+`bosun run console myapp` with real secrets loaded: `run` elevates to
+`webapp-svc` via a narrowly-scoped sudoers grant (`sudo -u webapp-svc`,
+exact path only) instead of reading the file as themselves.
+
+## Provisioning an app
+
+```bash
+sudo bosun add myapp     # one-time per app, run as root/sudo
+```
+
+This provisions `/var/www/myapp` with:
+- **setgid (`2775`)** on every directory, so new files/dirs are owned by the
+  `webapps` group regardless of which developer created them.
+- A **default ACL** (`setfacl -d -m g:webapps:rwX`) granting the group
+  effective write access on anything created inside, independent of the
+  `umask 027` that argus-tty's `profile.d/developer-restrictions.sh` already
+  applies to every developer/admin login — without that ACL, umask 027
+  would strip the group-write bit and one developer couldn't edit another's
+  files.
+- `/var/www/myapp/shared/.env` — an empty, `600` `root:root` file for this
+  app's env vars (`DATABASE_URL`, `SECRET_KEY_BASE`, etc.), plus a single
+  named-user ACL read grant for `webapp-svc`. Deliberately **not**
+  `webapps`-group readable — see "Who can do what" below for why, and edit
+  it with `sudo vi /var/www/myapp/shared/.env`.
+- `/var/www/myapp/shared/deploy.conf` — `660`, holds `RUBY_VERSION`,
+  `RUBY_GEMSET`, `PROJECT_REPO_URL`, `KEEP_LATEST_RELEASE` (deploy-pipeline
+  metadata, not a secret — that's `.env` above). Read by every deploy
+  subcommand. Also where you can optionally set `RELEASE_VERSION_CMD` to
+  override how `deploy` names each release — unset, it's a plain timestamp
+  (unchanged default); e.g. `RELEASE_VERSION_CMD='echo "$(date
+  +%Y%m%d%H%M%S)-$(git rev-parse --short HEAD)"'` makes releases traceable to
+  a commit instead. Runs with the freshly cloned repo as its working
+  directory, so `git` commands resolve.
+- `shared/bin/{puma,sidekiq}-exec` — small wrapper scripts that resolve
+  `RUBY_VERSION@RUBY_GEMSET` from `deploy.conf` at *run* time via RVM's
+  per-gemset wrapper scripts, so the systemd units below never need editing
+  when a developer bumps the ruby version.
+- `shared/bin/run` — the same env-loading, but forwards arbitrary args
+  instead of a fixed command: `shared/bin/run rails console`, `shared/bin/run
+  rake db:migrate`. Use this for anything run by hand instead of invoking
+  `bundle`/`rails` directly — see "Why a per-app `.env` file" below for why
+  it exists instead of a gem.
+- `shared/.ruby-version` / `shared/.ruby-gemset` (symlinked into `current/`
+  by `deploy`) — RVM's cd-hook auto-loads `RUBY_VERSION@RUBY_GEMSET` the
+  moment you `cd` into `current/` interactively, with **no trust prompt**.
+  Deliberately **not** a `.rvmrc` (RVM's older mechanism): `.rvmrc` is
+  arbitrary shell code RVM has to ask you to trust the first time — real
+  interactive-login friction — and this toolkit's own `.rvmrc` used to also
+  `source shared/.env` as whoever `cd`'d in, which would silently reopen the
+  exact access `.env`'s permissions now deny developer/deployer accounts
+  (see "Who can do what" below). Not generated at all anymore.
+- `puma-myapp.service` / `sidekiq-myapp.service` — installed under
+  `/etc/systemd/system/`, enabled but not started (there's no release yet).
+  Run as `webapp-svc`, an unprivileged, no-login system account — not root,
+  not a developer's own account. Developers start/stop/restart these via
+  argus-tty's already-whitelisted `systemctl {start,stop,restart} *` sudoers
+  entry; they have no way to create or edit unit files themselves, by
+  design — only `add` (run by an admin) does that.
+- `shared/deploy_key` / `shared/deploy_key.pub` — a git deploy keypair
+  generated once for this app and distributed to every current
+  developer/admin account, so `deploy` can `git clone` without anyone using
+  their own personal SSH key. See "Git deploy key" below.
+
+**Existing accounts** created before this feature: `bosun add` (first app
+on a box), `bosun bootstrap`, and `argus-tty add`/`add-admin`/`add-deployer`
+all retrofit every current developer/admin/deployer account onto
+`webapps`/`rvm` automatically now — no separate `sudo argus-tty
+reconfigure` step needed just for this. An account with an **already-open**
+session still needs a fresh login to pick up new group membership (a PAM
+limit, not something any script can work around).
+
+**Why a per-app `.env` file instead of the box-wide `/etc/environment`:**
+`/etc/environment` is sourced into *every* login shell and PAM session on the
+host — including admins'. Any sudoers rule broad enough to let developers
+edit it (even a "restricted" wrapper) is a realistic path to tampering with
+root's environment (`LD_PRELOAD`, `BASH_ENV`, arbitrary vars) on next login —
+a bigger hole than argus-tty's whitelist model is designed to allow.
+`shared/.env` confines each app's secrets to that app's own directory
+permissions instead — and, on top of that, its own permissions are tighter
+than the rest of the app tree (root + a named-user ACL grant for
+`webapp-svc` only, not the `webapps` group — see "Who can do what" above):
+even a compromised or malicious developer/deployer account has no standing
+read access to it at all.
+
+`add`/`do-release` wire this up with no gem dependency (deliberately not
+`dotenv-rails` — a plain `.env` file does nothing on its own without
+something to read it, and we didn't want that something to be a Gemfile
+addition every app has to carry): the `puma-<app>`/`sidekiq-<app>` systemd
+units load it via `EnvironmentFile=-shared/.env` (read by root, so `.env`'s
+tight permissions don't matter there), and, redundantly, the `puma-exec`/
+`sidekiq-exec` wrapper scripts also `source` it before exec'ing — they run
+as `webapp-svc`, which has the ACL grant. For anything run by hand —
+`rails console`, `rake`, migrations — use `bosun run` (e.g.
+`bosun run console myapp`) instead of invoking `bundle`/`rails` directly;
+it elevates to `webapp-svc` to load the same `deploy.conf`/`shared/.env`
+before running whatever command you pass it, without requiring the calling
+developer/admin's own account to read `.env` directly.
+
+**RVM / gemsets:** this toolkit does not install RVM as part of `add` —
+run `sudo bosun bootstrap` once per host instead (root, one-time;
+see the walkthrough below). It installs RVM in
+[multi-user mode](https://rvm.io/rvm/install) (a system-wide `/usr/local/rvm`
+and an `rvm` group). Once that group exists, every developer/admin/deployer account
+(new, or retrofitted automatically by `bootstrap` itself) is added to it
+automatically — as is the `webapp-svc` service account, which also needs
+`rvm` membership to actually load the gems it runs — so
+`ruby`/`bundle`/`rails`/gemset commands work with no sudo needed.
+
+`bootstrap` also cleans up conflicting **per-user** RVM installs every
+time it runs (not just on first install) — e.g. `~ubuntu/.rvm` from someone
+having run RVM's installer directly on some account before this toolkit's
+multi-user `/usr/local/rvm` existed. A per-user install auto-loads via a
+line in that account's `.bashrc`/`.bash_profile`, and RVM's own scripts
+aren't safe to load twice — the symptom is a login (or anything with a
+login-shell shebang) crashing with `... unbound variable` (e.g.
+`rvm_bash_nounset` or `_system_name`), which has nothing to do with
+whatever command happened to trigger it. `bootstrap` finds every
+`/home/*/.rvm` and `/root/.rvm`, strips the auto-load line from that
+account's shell rc files, and leaves the actual `.rvm` directory in place
+(never auto-deletes gemset data) — remove it yourself once you've confirmed
+nothing still depends on it.
+
+## Git deploy key (shared, not personal)
+
+`deploy` needs to `git clone` each app's repo, which normally means SSH
+access to that repo. Rather than every admin/deployer using their own
+personal key (which means whitelisting N different keys in your git host,
+and losing access the moment someone's personal key rotates or they're
+offboarded), `add` generates **one dedicated keypair per app** and
+distributes it to every current admin/deployer account automatically:
+
+```bash
+sudo bosun add myapp
+# ── Generated git deploy key for 'myapp' ──
+# Add this PUBLIC key as a Deploy Key on 'myapp's git repo (e.g. GitLab:
+# Project > Settings > Repository > Deploy Keys) — read-only is enough,
+# 'deploy' only ever clones:
+#
+# ssh-ed25519 AAAA... bosun@myapp
+#
+# Distributed 'myapp' deploy key to 2 admin/deployer account(s).
+```
+
+What to do with the printed public key: add it as a **Deploy Key** on the
+app's repo (GitLab: *Project → Settings → Repository → Deploy Keys*; GitHub:
+*Settings → Deploy keys*) — read-only access is enough, `deploy` never
+pushes. One deploy key per repo, shared by everyone allowed to deploy that
+app (deployer/admin — see "Who can do what" above); add/remove people from
+the `admin`/`deployer` groups (argus-tty) to control who can, not the git
+host's key list.
+
+**Developer deliberately never gets a copy of this key.** `require_role()`
+already blocks a plain developer from running `deploy` at all — handing
+them a personal, readable copy of the app's git deploy key anyway would be
+pure unnecessary exposure, especially if that key is also what a GitLab CI
+pipeline uses (via a dedicated deployer account) to trigger deploys
+remotely. `add` actively removes any copy a developer account received
+under an older version that didn't make this distinction.
+
+Where it lives:
+- **Private key**: `/var/www/myapp/shared/deploy_key` (`600`, `root:root` —
+  nobody can read the private key file directly, even though deployer/admin
+  accounts can use it via `deploy`).
+- **Distributed copies**: `~/.ssh/bosun/myapp/id_ed25519`, one
+  individually-owned `600` copy in *every* current admin/deployer account's
+  own home directory (never developer's — see above) — `deploy`
+  (`do-release`) picks this up automatically via `GIT_SSH_COMMAND` when it
+  exists, falling back to that account's own default SSH setup (with a
+  warning) if it doesn't.
+
+Re-running `add myapp` on an existing app leaves an already-generated
+key untouched and just re-distributes it — safe to re-run any time (e.g.
+after onboarding a new admin/deployer, to backfill their copy without
+regenerating the key or re-whitelisting anything in GitLab). Onboard anyone
+*after* `add` already ran once for an app? Re-run
+`sudo bosun add myapp` for each such app to distribute that app's
+key to the new account (this doesn't touch anything already provisioned —
+`.env`, `deploy.conf`, systemd units, etc. are all left exactly as they are).
+
+## Customizing deploy for one app (different services, extra steps, anything)
+
+The built-in `deploy` (do-release) manages exactly puma + sidekiq for every
+app, unconditionally — no config knob to learn for the common case. If one
+specific app needs something different (a different background worker like
+[sneakers](https://github.com/jondot/sneakers) instead of Sidekiq, extra
+build steps, a health check, whatever), override the whole script instead of
+configuring around the edges:
+
+```bash
+cp /usr/lib/bosun/deploy/do-release.sample /var/www/myapp/shared/do-release
+chmod +x /var/www/myapp/shared/do-release
+vi /var/www/myapp/shared/do-release        # it's your script now, edit freely
+```
+
+`bosun deploy myapp <branch>` checks for `shared/do-release` first
+and, if it's present and executable, runs *that* instead of the built-in
+default — for `myapp` only, every other app on the box keeps using the
+default untouched. Copied-and-unedited it behaves identically to the
+built-in default, so the first useful step after copying it is deploying
+once with no changes, to confirm the override wiring itself works before
+customizing.
+
+If an app has **no** override at all (or one that exists but isn't
+executable — e.g. someone forgot the `chmod +x` above), `deploy` doesn't
+fail or block: it prints a one-line, non-blocking warning to that effect
+and proceeds with the built-in puma+sidekiq default. This is just a safety
+net so a missing/mistyped override is visible in the deploy's own output
+instead of silently falling back with no trace — most apps are expected to
+never need an override at all. See
+[docs/custom-service.md](docs/custom-service.md) for adding a third
+service this way.
+
+This is a full script replacement, not a hook, so it can do anything a
+whitelisted developer/admin already can — different `systemctl` units, or
+run a worker via `docker` instead of systemd entirely (already fully
+whitelisted, and sidesteps the fact that developers have no way to create
+new unit files themselves). `do-release.sample`'s comments walk through both
+options for the "swap Sidekiq for a sneakers worker" example. What it can't
+do is grant new privileges — every `sudo` call in your override is still
+checked against the exact same developer/admin sudoers whitelist as
+everything else in argus-tty; writing your own script doesn't add to it.
+
+## Walkthrough: setting up a new app from scratch
+
+One-time per host (skip if already done):
+
+```bash
+sudo apt install ./argus-tty_1.0.0_all.deb    # or sudo ./install.sh from a loose checkout
+sudo apt install ./bosun_1.0.0_all.deb
+sudo argus-tty status                          # confirm green
+
+sudo bosun bootstrap                # installs RVM multi-user AND retrofits existing accounts + webapp-svc onto webapps/rvm
+```
+
+One-time per app:
+
+```bash
+# 1. Admin: provision the app
+sudo bosun add myapp
+# Prints a public key — add it as a read-only Deploy Key on myapp's git
+# repo (see "Git deploy key" above). Already distributed to every current
+# developer/admin account, so no per-person git access to set up.
+
+# If the deploying developer has no account yet:
+sudo argus-tty add alice --name "Alice Kumar" --pubkey alice_id_ed25519.pub
+# (they must log out/in if they were already logged in — group membership
+# doesn't apply retroactively to an open session)
+# Since they were just added, backfill their copy of myapp's deploy key:
+sudo bosun add myapp
+```
+
+```bash
+# 2. Developer: fill in deploy metadata
+ssh alice@host
+vi /var/www/myapp/shared/deploy.conf
+#   RUBY_VERSION=ruby-3.3.3
+#   RUBY_GEMSET=myapp
+#   PROJECT_REPO_URL=git@git.example.com:yourorg/myapp.git
+#   KEEP_LATEST_RELEASE=5
+
+# 3. Admin: fill in app secrets — shared/.env is root:root 600 (ACL read
+#    grant for webapp-svc only), so a developer/deployer account can't
+#    open it directly even to overwrite it; only an admin's full sudo
+#    covers this (see "Who can do what" above).
+sudo vi /var/www/myapp/shared/.env
+#   DATABASE_URL=postgres://...
+#   SECRET_KEY_BASE=...
+#   RAILS_ENV=production
+
+# 4. Developer: install this app's Ruby + OS build deps
+#    What this actually does (deployment/install): installs the OS packages
+#    Rails native gems need (nodejs, libmysqlclient-dev, imagemagick, etc. —
+#    sudo apt-get, whitelisted for developers), then `rvm install` +
+#    `rvm use --create` for the RUBY_VERSION@RUBY_GEMSET from step 2's
+#    deploy.conf, then `gem install bundler`. No sudo needed for the RVM
+#    part — multi-user RVM is group-writable. Requires `bosun bootstrap`
+#    (above) to have already run once on this host.
+bosun install myapp
+# [INFO]  Installing OS build dependencies (sudo apt-get — whitelisted for developers)...
+# [INFO]  Installing ruby-3.3.3 (gemset: myapp) via RVM — no sudo needed, multi-user RVM is group-writable...
+# [INFO]  Dependencies installed for 'myapp': ruby-3.3.3@myapp + bundler.
+bosun version myapp   # sanity-check: confirms the ruby/gemset deploy.conf actually has on file
+
+# 5. Developer: set up the shared config tree — run from a checkout of the
+#    APP's own repo (puma.rb/secret.yml templates are copied from ./ ).
+#    What this actually does (deployment/setup): creates releases/shared/
+#    config/log/tmp under /var/www/myapp, writes shared/.ruby-version +
+#    .ruby-gemset (so RVM's cd-hook auto-selects the right ruby the moment
+#    anyone `cd`s into current/), and copies ./puma.rb + ./secret.yml from
+#    the repo checkout you're running it from into shared/config/. Idempotent
+#    — safe to re-run; it never overwrites a database.yml/sidekiq.yml/
+#    secret.yml that already has real content in it, so a second run after
+#    you've filled those in won't blow your edits away.
+git clone git@git.example.com:yourorg/myapp.git /tmp/myapp-config
+cd /tmp/myapp-config
+bosun setup myapp
+# Project directory setup started for 'myapp'...
+# [WARN]  ./secret.yml not found in /tmp/myapp-config — skipping (expected to come from the app repo checkout).
+# Please fill in /var/www/myapp/shared/config/database.yml/sidekiq.yml/sidekiq.rb for 'myapp'.
+# App secrets (DATABASE_URL, SECRET_KEY_BASE, etc.) belong in /var/www/myapp/shared/.env, not in a config file.
+# [INFO]  Setup complete for 'myapp'.
+vi /var/www/myapp/shared/config/database.yml
+vi /var/www/myapp/shared/config/sidekiq.yml
+vi /var/www/myapp/shared/config/sidekiq.rb
+
+# 6. Developer: first deploy
+bosun deploy myapp main
+```
+
+Verify:
+
+```bash
+sudo systemctl status puma-myapp sidekiq-myapp
+sudo journalctl -u puma-myapp -n 50
+```
+
+Need a console or to run a migration by hand afterward? Don't invoke
+`bundle`/`rails` directly — use `bosun run` so `shared/.env` is
+actually loaded (see "Running rails commands" below):
+
+```bash
+bosun run console myapp
+bosun run db:migrate myapp
+```
+
+Steps 1–5 are one-time per app. Every deploy after that is just step 6 again:
+`bosun deploy myapp <branch>`. Want to prune old releases outside of a
+deploy? `bosun cleanup myapp` (runs automatically at the end of
+every `deploy` anyway).
+
+## Running rails commands and tailing logs
+
+`bosun run` is a generic wrapper around `rails` for one app — console,
+migrations, a custom rake task, `rails runner`, anything listed by `rails -T`
+— not a fixed list of shortcuts. The **app name is the last argument**
+(everything before it forwards to `rails` verbatim, including its own
+flags), unlike `install`/`setup`/`deploy`/`cleanup`, which take
+the app name first:
+
+```bash
+bosun run console myapp                          # -> bundle exec rails console
+bosun run db:migrate myapp                        # -> bundle exec rails db:migrate
+bosun run db:migrate VERSION=20260101120000 myapp  # extra args forward too
+bosun run runner 'puts User.count' myapp           # quote multi-word args as one
+```
+
+No sudo, no gem dependency, and it never touches `bundle`/`rails` directly
+itself — it resolves the app's `shared/bin/run` wrapper (created by
+`add`) and execs `rails "$@"` through it, so `RUBY_VERSION`/
+`RUBY_GEMSET`/`deploy.conf`/`shared/.env` are loaded exactly the same way
+`puma`/`sidekiq` get them.
+
+`bosun logs` shows (or follows) an app's Rails log files under
+`shared/log/` — the same directory `current/log` symlinks to. No sudo
+needed; `shared/` is already `webapps`-group readable for every developer/
+admin account:
+
+```bash
+bosun logs myapp        # last 200 lines, then exit
+bosun logs -t myapp     # follow (like tail -f), Ctrl-C to stop
+```
+
+This is the app's own `Rails.logger` output (`log/production.log`, etc.) —
+for the puma/sidekiq *process's* stdout/stderr (crashes, boot errors before
+Rails.logger even starts), use `sudo journalctl -u puma-myapp` /
+`-u sidekiq-myapp` instead — already whitelisted for developers, no
+argument restriction.
+
+## Further documentation
+
+- [docs/crontab.md](docs/crontab.md) — scheduled tasks via `/etc/cron.d/<app>`
+- [docs/systemd.md](docs/systemd.md) — the puma/sidekiq units, socket activation
+- [docs/custom-service.md](docs/custom-service.md) — adding a third service (sneakers, a custom worker, anything beyond puma+sidekiq) in bosun's own format
+- [docs/ruby-version.md](docs/ruby-version.md) — changing an app's ruby version: the install/deploy sequence, and how old-version cleanup stays safe on a shared host
+- [docs/standalone.md](docs/standalone.md) — running bosun without argus-tty: what single-operator standalone mode changes, and the security tradeoff it accepts
+- [docs/nginx.md](docs/nginx.md) — reverse-proxying to the Puma unix socket
+
+## License
+
+[MIT](LICENSE).
+
+---
+
+# docs/custom-service.md
+
+# Adding a custom service (beyond puma + sidekiq)
+
+`sudo bosun add <app-name>` only ever generates two systemd units:
+`puma-<app>.service` and `sidekiq-<app>.service` (see
+[systemd.md](systemd.md)). Some apps need a third long-running process — a
+RabbitMQ consumer ([sneakers](https://github.com/jondot/sneakers)), a
+different queue backend, a scheduled worker pool, whatever. This doc covers
+how to add one **in bosun's own format**, so it gets the same env loading,
+logging convention, and deploy-time start/stop handling every other
+bosun-managed process already gets, instead of a one-off hand-rolled unit
+that drifts from everything else on the box.
+
+> **Standalone mode (no argus-tty):** `User=webapp-svc Group=webapps` in
+> the template below is actually `User=<your account> Group=bosun-apps` —
+> match whatever `/etc/bosun.conf`/the puma/sidekiq units on your host
+> already use. See [standalone.md](standalone.md).
+
+## Why this isn't self-service the way `install`/`setup` are
+
+Developers/admins have no whitelisted way to create or edit systemd unit
+files themselves (no `sudo tee /etc/systemd/system/...` in argus-tty's
+sudoers whitelist, by design — see the main README's "Who can do what").
+`bosun add`'s `write_unit()` is the only thing that creates unit files, and
+it only ever calls itself for `puma`/`sidekiq`. That leaves two paths for a
+third service:
+
+- **Ask an admin to hand-create the unit** (below) — still fully
+  whitelisted work (`systemctl start/stop/restart/status` already is), just
+  not something `bosun add` does automatically for you.
+- **Run it via `docker` instead** — already fully whitelisted for
+  developers/admins, no unit file needed at all. See "Docker instead of
+  systemd" below.
+
+Either way, your app's own deploy override (`shared/do-release`) is what
+actually starts/stops/restarts it on every deploy — see "Wiring it into
+deploy" below.
+
+## Path 1: a hand-created systemd unit
+
+Ask an admin to create `/etc/systemd/system/<name>-<app>.service`, following
+**exactly** the same template `bin/add.sh`'s `write_unit()` uses for
+puma/sidekiq — same user, same env loading, same restart policy:
+
+```ini
+[Unit]
+Description=<name> (<app>)
+After=network.target
+
+[Service]
+Type=simple
+User=webapp-svc
+Group=webapps
+WorkingDirectory=/var/www/<app>/current
+EnvironmentFile=-/var/www/<app>/shared/.env
+ExecStart=/var/www/<app>/shared/bin/<name>-exec
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable <name>-<app>.service   # don't start yet — no exec wrapper exists until the next step
+```
+
+### The exec wrapper (`shared/bin/<name>-exec`) — this part IS self-service
+
+Unlike the unit file, `shared/bin/` is `webapps`-group writable — any
+developer/admin can create this without an admin's help, same as `bosun
+add` already does for `shared/bin/puma-exec`/`shared/bin/sidekiq-exec`:
+
+```bash
+#!/bin/bash
+# shared/bin/<name>-exec — resolves RUBY_VERSION/RUBY_GEMSET from
+# deploy.conf at RUN time, not template time, same as puma-exec/
+# sidekiq-exec.
+set -euo pipefail
+set -a
+source "/var/www/<app>/shared/deploy.conf"
+[[ -f "/var/www/<app>/shared/.env" ]] && source "/var/www/<app>/shared/.env"
+set +a
+cd "/var/www/<app>/current"
+# RVM's wrapper binaries don't set rvm_path themselves — without it, RVM's
+# stock per-ruby .irbrc falls through to requiring a personal ~/irbrc that
+# usually doesn't exist, crashing irb/console for everyone.
+export rvm_path="/usr/local/rvm"
+# Own logfile via shell redirection (>> ... 2>&1) — NOT systemd's
+# StandardOutput=file:/StandardError=file:, and NOT a `-L`/`--logfile` CLI
+# flag if the process doesn't have one (Sidekiq 6.0+ removed its own
+# entirely). This is the one logging convention every bosun-managed
+# worker uses — see the sidekiq-exec/sneaker-exec wrappers for other apps
+# in this repo's scripts/ directory that already do this.
+exec "/usr/local/rvm/wrappers/${RUBY_VERSION}@${RUBY_GEMSET}/bundle" exec <your-command-here> \
+  >> "/var/www/<app>/shared/log/<name>.log" 2>&1
+```
+
+```bash
+chmod 755 /var/www/<app>/shared/bin/<name>-exec
+sudo systemctl start <name>-<app>.service
+tail -f /var/www/<app>/shared/log/<name>.log
+```
+
+### Worked example: a sneakers (RabbitMQ) consumer
+
+```bash
+# unit: sneaker-myapp.service — ExecStart=/var/www/myapp/shared/bin/sneaker-exec
+# shared/bin/sneaker-exec's exec line:
+exec "/usr/local/rvm/wrappers/${RUBY_VERSION}@${RUBY_GEMSET}/bundle" exec rake sneakers:run \
+  >> "/var/www/myapp/shared/log/sneaker.log" 2>&1
+```
+
+If the worker needs its own fixed config (which queue, concurrency) rather
+than a secret, bake it in as a plain `export` in the wrapper, same as
+`-q`/`-c` flags get baked into a `sidekiq-<name>-exec` wrapper — it isn't a
+secret, so it doesn't belong in `shared/.env`:
+
+```bash
+export WORKERS="GhaProcessQueueWorker"
+export RM_WORKER="4"
+```
+
+## Path 2: Docker instead of systemd
+
+No unit file, no admin needed — `docker` is already fully whitelisted:
+
+```bash
+sudo docker rm -f <name>-<app> 2>/dev/null || true
+sudo docker run -d --name <name>-<app> --restart unless-stopped \
+  -v "/var/www/<app>/current:/app" -w /app --env-file "/var/www/<app>/shared/.env" \
+  your-ruby-image bundle exec <your-command-here>
+```
+
+Your deploy override then calls `docker stop|start|inspect <name>-<app>`
+wherever the systemd path below calls `systemctl`/`svc_active`.
+
+## Wiring it into deploy
+
+The built-in `do-release` only knows about `puma-<app>`/`sidekiq-<app>`. A
+third service needs a per-app override — copy `do-release.sample` to
+`/var/www/<app>/shared/do-release`, `chmod +x` it, and:
+
+1. Rename every `*_worker` function/variable to your service's name (e.g.
+   `WORKER_UNIT` -> `SNEAKER_UNIT`, matching the unit name from Path 1, or
+   the container name from Path 2).
+2. Swap the `systemctl stop/start`/`svc_active` calls in those renamed
+   functions for `docker stop/start/inspect` if you went with Path 2.
+3. Deploy once with no other changes first, to confirm the override and
+   the new service both actually come up, before customizing further.
+
+See `do-release.sample`'s own header comment for the exact lines to touch
+— it already documents this swap in detail. `deployment/do-release` (the
+built-in default) now also prints a one-line, non-blocking warning on
+every deploy for an app with no override at all, as a safety net against a
+forgotten or mistyped `shared/do-release` — see its own comment.
+
+## Logging — the one rule every custom service should follow
+
+Own logfile via shell redirection in the exec wrapper (`>> logfile 2>&1`),
+not systemd's `StandardOutput=file:`/`StandardError=file:` and not a
+process's own `-L`/`--logfile` flag if it has one. Three reasons this is
+the standard across every bosun-managed worker:
+
+- A process-level flag might not exist (Sidekiq 6.0+ removed `-L`/`-P`/`-d`
+  entirely — it expects an external supervisor, i.e. systemd, to own
+  logging).
+- `StandardOutput=file:` opens the file as root before systemd drops
+  privileges to `webapp-svc` — if the process later reopens that same path
+  itself (as Puma does for `config/puma.rb`'s own `stdout_redirect`), the
+  reopen fails with `EACCES` because the file's now root-owned. See
+  [systemd.md](systemd.md)'s note on exactly this for Puma.
+- One convention, one place to look, regardless of which process it is —
+  `tail -f shared/log/<name>.log` always works the same way.
+
+---
+
+# docs/systemd.md
+
+# systemd units: puma + sidekiq
+
+`sudo bosun add <app-name>` writes and enables two systemd units per app
+automatically — you normally never write one by hand. This doc covers what
+gets generated, the shipped reference copies, and optional socket
+activation.
+
+> **Standalone mode (no argus-tty):** `User=webapp-svc Group=webapps`
+> below is actually `User=<your account> Group=bosun-apps` — the generated
+> units already have the right names for your host. See
+> [standalone.md](standalone.md).
+
+## What `bosun add` generates
+
+`write_unit()` in `bin/add.sh` writes both units directly (not from a
+template file):
+
+```
+/etc/systemd/system/puma-<app>.service
+/etc/systemd/system/sidekiq-<app>.service
+```
+
+Both run as `User=webapp-svc Group=webapps`, `WorkingDirectory=<app>/current`,
+`EnvironmentFile=-<app>/shared/.env`, `Restart=on-failure`. They're
+`enable`d but not started by `add` — there's no release yet
+(`current` doesn't exist until the first `bosun deploy`).
+
+Restart both at once with `bosun restart <app-name>` (added alongside this
+doc — admin/deployer tier, same as `deploy`/`cleanup`), or individually via
+the already-whitelisted `sudo systemctl {start,stop,restart} <unit>`.
+
+## The shipped reference copies
+
+Two files ship at `/usr/lib/bosun/deploy/`:
+
+- `puma-app_name.service.sample` — an annotated copy of what `bosun add`
+  already generates. Useful as a reference, or to hand-create a unit
+  outside the normal `bosun add` flow.
+- `puma-app_name.socket.sample` — optional socket-activation unit (see
+  below).
+
+Both are templates with the literal placeholder `app_name` — replace every
+occurrence with your actual app name before using either by hand.
+
+**Puma's own log redirect, and why the generated unit doesn't also
+redirect stdout/stderr:** `config/puma.rb` (the app's own file) already
+does its own `stdout_redirect` to `shared/log/puma.log`. If the systemd
+unit also set `StandardOutput=`/`StandardError=` to that same path, systemd
+would create/open it as root before dropping privileges to
+`User=webapp-svc`, and Puma's later reopen of that now-root-owned file
+would fail with `EACCES`. Leave those unset (defaults to the journal) and
+let Puma own the file itself. Unit-level events (start/stop/restart,
+failures to launch) still show up in the journal regardless:
+
+```bash
+sudo journalctl -t puma-<app> -f
+```
+
+## Socket activation (optional)
+
+`puma-app_name.socket.sample` lets systemd own the Unix socket file
+(`shared/tmp/sockets/puma.sock`) and hand Puma an already-open file
+descriptor, instead of Puma creating/binding the socket itself at boot.
+Buys zero dropped connections across a Puma restart. To use it:
+
+1. Copy `puma-app_name.socket.sample` to
+   `/etc/systemd/system/puma-<app>.socket`, replacing `app_name`.
+2. **Remove or comment out** the `bind "unix://..."` line in the app's
+   `config/puma.rb` — with socket activation, systemd owns that path; Puma
+   trying to bind it too defeats the point (and can fail outright).
+3. Add `Requires=puma-<app>.socket` under `[Unit]` in
+   `puma-<app>.service` so the socket is always up before Puma starts.
+4. `sudo systemctl daemon-reload`
+5. `sudo systemctl enable --now puma-<app>.socket` (starting just the
+   `.socket` activates on first connection; start both units if you don't
+   need on-demand activation).
+
+This is entirely optional — `config/puma.rb` binding its own socket
+directly (the default `bosun add` leaves in place) is simpler and fine for
+most setups; socket activation only matters if dropped connections during
+a Puma restart are a real concern for this app.
+
+---
+
+# docs/crontab.md
+
+# Scheduled tasks: `/etc/cron.d/<app>`
+
+`sudo bosun add <app-name>` writes `/etc/cron.d/<app-name>` automatically —
+fully commented out, so it has zero effect until you edit it. This doc
+covers the format, why it must run as `webapp-svc`, and how to confirm a
+job actually ran.
+
+> **Standalone mode (no argus-tty):** every `webapp-svc` below is actually
+> whatever account `/etc/bosun.conf` names (see
+> [standalone.md](standalone.md)) — the cron file `bosun add` generates
+> already has the right name baked in for your host, so copy its own
+> example line rather than the literal `webapp-svc` shown here.
+
+## The file `bosun add` generates
+
+```
+# /etc/cron.d/myapp — scheduled tasks for 'myapp'.
+#
+# cron.d format has 6 fields, NOT 5 like a personal 'crontab -e':
+#   min hour dom month dow  user  command
+#
+# Run as 'webapp-svc' — the same unprivileged account puma/sidekiq already
+# run as. It's the only account with a read grant on shared/.env, so any
+# scheduled task that needs real app env vars loaded must run as this user
+# via the generated shared/bin/run wrapper, not as root or a developer
+# account.
+#
+# Example (uncomment and edit — runs daily at 02:30):
+#30 2 * * *  webapp-svc  /var/www/myapp/shared/bin/run rake some:scheduled_task >> /var/www/myapp/shared/log/cron.log 2>&1
+```
+
+`bosun add` never overwrites this file on a re-run — same "leave existing
+content untouched" rule it applies to `shared/.env`/`deploy.conf` — so your
+edits are never clobbered.
+
+## Why 6 fields, and why `/etc/cron.d/`, not `crontab -e`
+
+A plain user's `crontab -e` has 5 fields (schedule + command) and is owned
+by that user. `/etc/cron.d/*` files are root-owned and need a 6th field —
+the user to run the command as — because one file can schedule jobs for
+multiple users. Using `/etc/cron.d/<app>` instead of `webapp-svc`'s own
+crontab is deliberate:
+
+- `webapp-svc` is a `nologin` system account (see `argus-tty`'s
+  `AT_WEBAPPS_SVC_USER`) — it has no interactive shell for `crontab -e` to
+  work cleanly with.
+- Keeping the schedule as a file under `/etc/cron.d/` keeps it next to the
+  app's other generated config (systemd units, `deploy.conf`) instead of
+  hidden inside `/var/spool/cron/`.
+
+## Why `webapp-svc`, specifically
+
+`shared/.env` (the app's secrets — `DATABASE_URL`, `SECRET_KEY_BASE`, etc.)
+is `root:root` 600 with a single named-user ACL read grant for
+`webapp-svc` — no group can read it, deliberately (see the main README's
+"Why a per-app `.env` file" section). `shared/bin/run` (generated by
+`bosun add` alongside the cron file) sources `deploy.conf` and
+`shared/.env`, then `exec`s your command under the app's RVM-resolved
+ruby/gemset. A cron job that doesn't run as `webapp-svc` calling this
+wrapper either can't read the env vars at all, or has to re-implement that
+loading itself — always prefer:
+
+```
+<schedule>  webapp-svc  /var/www/<app>/shared/bin/run <command> >> /var/www/<app>/shared/log/cron.log 2>&1
+```
+
+## Requirements for the file to actually run
+
+1. **Owned by root**, mode `644` — `bosun add` already sets this.
+2. **Clean filename** — lowercase letters/digits/`-`/`_` only, no dots, no
+   `~`. The app name validation `bosun add` already enforces
+   (`^[a-z][a-z0-9_-]{0,31}$`) satisfies this.
+3. No restart/reload needed — cron re-scans `/etc/cron.d/` on its own.
+
+## Verifying a job actually ran
+
+```bash
+sudo -u webapp-svc /var/www/<app>/shared/bin/run rake some:scheduled_task  # run once by hand first
+tail -f /var/www/<app>/shared/log/cron.log                                 # the job's own output
+journalctl -u cron -f          # Debian/Ubuntu — follow live
+grep CRON /var/log/syslog      # Debian/Ubuntu — history
+```
+
+---
+
+# docs/ruby-version.md
+
+# Changing an app's Ruby version
+
+Bumping `RUBY_VERSION` in `deploy.conf` and re-running `bosun install` does
+more than just install the new version — it also cleans up the old one,
+safely, on a host where several apps share the same RVM install. This doc
+covers the full sequence and exactly what gets removed and when.
+
+## The sequence
+
+```bash
+vi /var/www/myapp/shared/deploy.conf   # bump RUBY_VERSION (and RUBY_GEMSET if you want a new gemset name too)
+bosun install myapp                    # installs the new ruby, and removes the old one if it's safe to (see below)
+bosun deploy myapp main                # next deploy runs `bundle install` under the NEW gemset, then symlinks + restarts
+bosun setup myapp                      # optional — refreshes shared/.ruby-version/.ruby-gemset for RVM's cd-hook
+```
+
+**`install` alone does not finish the job.** It only gets the new Ruby
+version and `bundler` ready — gemsets are scoped per Ruby version in RVM, so
+`ruby-3.4.0@myapp` starts out completely empty even if `ruby-3.3.3@myapp`
+already had the whole app's Gemfile installed. If you restarted Puma/Sidekiq
+right after `install` and before a fresh `deploy`, they'd crash on boot —
+the exec wrappers (`shared/bin/{puma,sidekiq}-exec`) correctly resolve
+`RUBY_VERSION`/`RUBY_GEMSET` from `deploy.conf` at run time, so they'd try to
+launch under the new Ruby, but find no gems installed there yet. `deploy` is
+what actually runs `bundle install` against the real Gemfile under the new
+gemset — see the main README's "Why a per-app `.env` file" section for how
+the exec wrappers resolve things at run time generally.
+
+## What `install` actually removes, and when
+
+`install` compares two things every time it runs:
+
+- `deploy.conf`'s current `RUBY_VERSION` (just loaded).
+- `shared/.ruby-version` — written by `bosun setup`, so it still holds
+  whatever version this app was set up under **last time**, independent of
+  whatever `deploy.conf` says right now.
+
+If they differ, that's a version bump, and `install` tries to remove the
+**old** version — but only after checking every other app on the host:
+
+```bash
+for other_conf in /var/www/*/shared/deploy.conf; do
+  grep -qx "RUBY_VERSION=<old-version>" "$other_conf" && echo "still needed by $other_conf"
+done
+```
+
+- **Nothing else references it** → `rvm uninstall <old-version>` runs, and
+  the install logs exactly that.
+- **Something else still does** → the old version is left installed, with a
+  warning naming exactly which app's `deploy.conf` is still using it.
+
+This check exists because `rvm uninstall` removes a Ruby version — and
+**every gemset under it, for every app** — not just the one you're
+upgrading. Bosun deliberately runs multiple apps on one shared host (see the
+main README); RVM rubies aren't scoped per app, so blindly uninstalling the
+old version the moment one app moves off it could silently break a
+completely different app that's still on it. Skipping removal (with a clear
+reason in the log) is always the safe default here — this is opportunistic
+cleanup, not something anything else depends on succeeding, so a skip or a
+failed `rvm uninstall` (logged as a warning, not a fatal error) never fails
+the rest of `install`.
+
+## First-ever install isn't affected
+
+A brand-new app has no `shared/.ruby-version` yet (that file is only written
+by `bosun setup`, step 5 in the main walkthrough — AFTER `install`, step 4,
+on a first-time setup). With nothing to compare against, `install` just
+installs the requested version and skips the removal check entirely — no
+version is ever "assumed old" on a first run.
+
+## Checking what's actually installed
+
+```bash
+bosun version myapp     # this app's configured ruby/gemset, straight from deploy.conf
+rvm list                # every Ruby version actually installed on this host
+rvm gemset list_all     # every gemset under every installed ruby
+```
+
+---
+
+# docs/standalone.md
+
+# Standalone mode (no argus-tty)
+
+Bosun is built around argus-tty's multi-tenant account model — developer/
+deployer/admin tiers, a sudoers whitelist, a dedicated unprivileged
+`webapp-svc` service account that secrets are ACL-locked to. If argus-tty
+isn't installed, bosun no longer refuses to run: it falls back to a
+**standalone mode** for a single operator on their own box instead. This
+doc covers exactly what that mode is, what it isn't, and the tradeoff
+you're accepting by using it.
+
+## When it kicks in
+
+Automatically, the moment `/usr/lib/argus-tty/lib/common.sh` isn't found —
+no flag to pass, nothing to configure. Every bosun subcommand checks for it
+independently (`deployment/lib/common`, `bin/add.sh`, and
+`deployment/bootstrap` each do their own check), so there's no scenario
+where half of bosun thinks argus-tty is installed and half doesn't.
+
+## What actually changes
+
+- **No tiers.** `require_role()` always passes — there's no
+  developer/deployer/admin distinction to enforce when there's only one
+  account using bosun at all.
+- **No separate service account.** `AT_WEBAPPS_SVC_USER` — the account
+  Puma/Sidekiq run as, and the only account with ACL read access to
+  `shared/.env` — becomes **the same account that ran `sudo bosun add`**,
+  not a dedicated unprivileged one. Everywhere bosun normally elevates to
+  that service account (`bosun run`, the `assets:precompile` step in
+  `do-release.sample`) skips the elevation entirely instead, since you're
+  already that account.
+- **One deploy key copy, not a distribution list.** `distribute_deploy_key`
+  normally scans every admin/deployer account on the host; in standalone
+  mode there's exactly one account to give a copy to.
+- **A bosun-owned group**, `bosun-apps`, created automatically if it
+  doesn't exist — standing in for argus-tty's `webapps` group. The
+  standalone account is added to it automatically so it can run
+  `install`/`setup`/`deploy`/`run` without needing `sudo` for everything,
+  the same way argus-tty would have put a developer/admin account there.
+- **`AT_RVM_ROOT` stays `/usr/local/rvm`** — RVM's multi-user path was
+  never actually argus-tty's to provide; `bosun bootstrap` installs it
+  either way.
+
+## The tradeoff — read this before you rely on it
+
+**This is the actual thing argus-tty mode gives you that standalone mode
+doesn't: secrets stop being isolated from the deploying account.** There's
+no second, unprivileged identity for `shared/.env` to be locked away from
+— the one account that can run `bosun deploy` can also just read
+`DATABASE_URL`/`SECRET_KEY_BASE` directly, because it's the same account
+Puma/Sidekiq run as. If you add a second human to this box later, they
+either share full access to the same account, or you're back to needing
+argus-tty's tier model — standalone mode is for exactly one operator, not
+a lighter-weight multi-user mode.
+
+## Quick start
+
+Nothing different from the normal walkthrough — just skip installing
+argus-tty:
+
+```bash
+sudo apt install ./bosun_1.0.0_all.deb   # argus-tty not installed — standalone mode
+sudo bosun bootstrap                     # RVM multi-user, same as always
+
+sudo bosun add myapp
+#  [WARN] Added 'you' to 'bosun-apps' — log out and back in to pick it up...
+# log out, log back in
+
+vi /var/www/myapp/shared/deploy.conf
+sudo vi /var/www/myapp/shared/.env
+bosun install myapp
+bosun setup myapp
+bosun deploy myapp main
+```
+
+## You only set this once — `/etc/bosun.conf`
+
+The standalone account defaults to whoever ran `sudo` (`$SUDO_USER`). The
+**first** standalone command that resolves it this way — normally
+`bosun bootstrap`, since that's step one in the walkthrough, or `bosun add`
+if bootstrap already ran before argus-tty was removed — saves it to
+`/etc/bosun.conf` automatically:
+
+```bash
+sudo bosun bootstrap
+# [INFO] Saved standalone account 'you' to /etc/bosun.conf — future bosun
+# commands won't need BOSUN_STANDALONE_USER set.
+```
+
+Every bosun command after that — `install`, `setup`, `deploy`, `run`,
+`version`, even run directly as yourself with no `sudo` at all — reads it
+from there with nothing to pass:
+
+```bash
+cat /etc/bosun.conf
+# BOSUN_STANDALONE_USER=you
+
+bosun install myapp     # just works, no env var needed
+```
+
+`/etc/bosun.conf` is created once and never overwritten automatically
+(same idiom as `deploy.conf`/`shared/.env`) — edit it by hand if you ever
+need to change the saved account.
+
+## `BOSUN_STANDALONE_USER` — overriding it, or before it's ever been saved
+
+Two cases need this set explicitly instead of relying on `/etc/bosun.conf`:
+a literal root login with no `sudo` involved at all (no `$SUDO_USER` to
+read, and nothing saved yet — bosun errors out clearly rather than guess),
+or a CI/automation account that should use a different name than whatever
+ends up in `/etc/bosun.conf`. An explicit value always wins over the saved
+one, for that one invocation only:
+
+```bash
+sudo BOSUN_STANDALONE_USER=deploy bosun add myapp
+BOSUN_STANDALONE_USER=deploy bosun install myapp
+BOSUN_STANDALONE_USER=deploy bosun deploy myapp main
+```
+
+Whatever you pass must already exist as a real system account — bosun
+checks (`id <name>`) and errors out immediately if it doesn't, rather than
+half-provisioning an app around a name that resolves to nothing.
+
+## Going back to argus-tty mode later
+
+Install argus-tty, then re-run `sudo bosun add <app>` for each existing
+app — it's idempotent (see the main README) and will pick up the real
+tiered model from that point on. It won't retroactively fix the secret
+isolation gap for anything that ran under standalone mode in the meantime
+(the standalone account already had `shared/.env` readable) — treat that
+as a signal to rotate `SECRET_KEY_BASE`/any credentials in it if this
+box is moving from single- to multi-operator.
+
+---
+
+# docs/nginx.md
+
+# Reverse-proxying an app with nginx
+
+bosun does not install, configure, or manage nginx — this is a
+documentation-only reference for the reverse-proxy config most Puma
+deployments pair with it, pointing at the Unix socket `bosun add`/
+`config/puma.rb` already create. TLS/certificate management is left
+entirely to your own tooling (certbot, an internal CA, a load balancer in
+front of this box, etc.) — not covered here.
+
+> **Standalone mode (no argus-tty):** the socket is owned by your own
+> account and `bosun-apps`, not literally `webapp-svc`/`webapps` — see
+> [standalone.md](standalone.md). Nothing about the nginx config below
+> changes either way.
+
+## The socket bosun already gives you
+
+Puma binds a Unix socket at:
+
+```
+/var/www/<app>/shared/tmp/sockets/puma.sock
+```
+
+(created by `deployment/setup`, see `mkdir -p
+"$SHARED_PATH/tmp/sockets"`). `webapp-svc` owns it, group `webapps` — the
+same account/group that already own everything else under the app tree.
+
+## A per-app server block
+
+One `server {}` block per app, named after the app so it's easy to keep
+track of as you add more:
+
+```nginx
+# /etc/nginx/sites-available/myapp
+upstream myapp_puma {
+  server unix:/var/www/myapp/shared/tmp/sockets/puma.sock fail_timeout=0;
+}
+
+server {
+  listen 80;
+  server_name myapp.example.com;
+
+  # Serve precompiled assets directly, bypass Puma entirely for them.
+  location ~ ^/(assets|packs)/ {
+    root /var/www/myapp/current/public;
+    expires max;
+    add_header Cache-Control "public";
+  }
+
+  location / {
+    proxy_pass http://myapp_puma;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+
+  client_max_body_size 20m;
+}
+```
+
+```bash
+sudo ln -s /etc/nginx/sites-available/myapp /etc/nginx/sites-enabled/myapp
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+## Notes
+
+- The socket path only exists once the app has had at least one
+  `bosun deploy` (actually, the socket itself is created by Puma when it
+  starts under `puma-<app>.service` — the parent directory is created by
+  `bosun setup`). Starting nginx before the service has ever run is fine
+  — nginx returns 502 until the socket exists, same as any proxied
+  upstream that isn't up yet.
+- If you add `puma-app_name.socket.sample` (socket activation — see
+  `docs/systemd.md`), the socket path and ownership stay the same; only
+  *who creates the file* changes (systemd instead of Puma).
+- TLS, rate limiting, and any WAF/CDN layer are entirely outside bosun's
+  scope — this file only documents the minimum reverse-proxy wiring to the
+  socket bosun already manages.
