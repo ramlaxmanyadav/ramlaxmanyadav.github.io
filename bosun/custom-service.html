@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Adding a custom service beyond Puma + Sidekiq — Bosun</title>
+<meta name="description" content="sudo bosun add &lt;app-name&gt; only ever generates two systemd units: puma-&lt;app&gt;.service and sidekiq-&lt;app&gt;.service (see systemd.md). Some apps need a third long-running process — a RabbitMQ consumer (sneakers), a different queue backend, a scheduled worker pool, what">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.75rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  blockquote {
+    margin: 1rem 0; padding: 0.6rem 1rem; border-left: 3px solid #c7d2fe;
+    background: #eef2ff; color: #3730a3; font-size: 0.92rem;
+  }
+  blockquote p { margin: 0.3rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Bosun</a></p>
+    <h1>Adding a custom service beyond Puma + Sidekiq</h1>
+    <p class="tagline">Wiring a third long-running process (a sneakers consumer, Docker, anything else) into bosun's own format.</p>
+  </header>
+
+  <p><code>sudo bosun add &lt;app-name&gt;</code> only ever generates two systemd units: <code>puma-&lt;app&gt;.service</code> and <code>sidekiq-&lt;app&gt;.service</code> (see <a href="systemd.html">systemd.md</a>). Some apps need a third long-running process — a RabbitMQ consumer (<a href="https://github.com/jondot/sneakers">sneakers</a>), a different queue backend, a scheduled worker pool, whatever. This doc covers how to add one <strong>in bosun's own format</strong>, so it gets the same env loading, logging convention, and deploy-time start/stop handling every other bosun-managed process already gets, instead of a one-off hand-rolled unit that drifts from everything else on the box.</p>
+  <blockquote>
+  <p><strong>Standalone mode (no argus-tty):</strong> <code>User=webapp-svc Group=webapps</code> in the template below is actually <code>User=&lt;your account&gt; Group=bosun-apps</code> — match whatever <code>/etc/bosun.conf</code>/the puma/sidekiq units on your host already use. See <a href="standalone.html">standalone.md</a>.</p>
+  </blockquote>
+  <h2 id="why-this-isnt-self-service-the-way-installsetup-are">Why this isn't self-service the way <code>install</code>/<code>setup</code> are</h2>
+  <p>Developers/admins have no whitelisted way to create or edit systemd unit files themselves (no <code>sudo tee /etc/systemd/system/...</code> in argus-tty's sudoers whitelist, by design — see the main README's "Who can do what"). <code>bosun add</code>'s <code>write_unit()</code> is the only thing that creates unit files, and it only ever calls itself for <code>puma</code>/<code>sidekiq</code>. That leaves two paths for a third service:</p>
+  <ul>
+  <li><strong>Ask an admin to hand-create the unit</strong> (below) — still fully whitelisted work (<code>systemctl start/stop/restart/status</code> already is), just not something <code>bosun add</code> does automatically for you.</li>
+  <li><strong>Run it via <code>docker</code> instead</strong> — already fully whitelisted for developers/admins, no unit file needed at all. See "Docker instead of systemd" below.</li>
+  </ul>
+  <p>Either way, your app's own deploy override (<code>shared/do-release</code>) is what actually starts/stops/restarts it on every deploy — see "Wiring it into deploy" below.</p>
+  <h2 id="path-1-a-hand-created-systemd-unit">Path 1: a hand-created systemd unit</h2>
+  <p>Ask an admin to create <code>/etc/systemd/system/&lt;name&gt;-&lt;app&gt;.service</code>, following <strong>exactly</strong> the same template <code>bin/add.sh</code>'s <code>write_unit()</code> uses for puma/sidekiq — same user, same env loading, same restart policy:</p>
+  <pre><code>[Unit]
+  Description=&lt;name&gt; (&lt;app&gt;)
+  After=network.target
+
+  [Service]
+  Type=simple
+  User=webapp-svc
+  Group=webapps
+  WorkingDirectory=/var/www/&lt;app&gt;/current
+  EnvironmentFile=-/var/www/&lt;app&gt;/shared/.env
+  ExecStart=/var/www/&lt;app&gt;/shared/bin/&lt;name&gt;-exec
+  Restart=on-failure
+  RestartSec=3
+
+  [Install]
+  WantedBy=multi-user.target</code></pre>
+  <pre><code>sudo systemctl daemon-reload
+  sudo systemctl enable &lt;name&gt;-&lt;app&gt;.service   # don&#39;t start yet — no exec wrapper exists until the next step</code></pre>
+  <h3 id="the-exec-wrapper-sharedbinname-exec--this-part-is-self-service">The exec wrapper (<code>shared/bin/&lt;name&gt;-exec</code>) — this part IS self-service</h3>
+  <p>Unlike the unit file, <code>shared/bin/</code> is <code>webapps</code>-group writable — any developer/admin can create this without an admin's help, same as <code>bosun add</code> already does for <code>shared/bin/puma-exec</code>/<code>shared/bin/sidekiq-exec</code>:</p>
+  <pre><code>#!/bin/bash
+  # shared/bin/&lt;name&gt;-exec — resolves RUBY_VERSION/RUBY_GEMSET from
+  # deploy.conf at RUN time, not template time, same as puma-exec/
+  # sidekiq-exec.
+  set -euo pipefail
+  set -a
+  source &quot;/var/www/&lt;app&gt;/shared/deploy.conf&quot;
+  [[ -f &quot;/var/www/&lt;app&gt;/shared/.env&quot; ]] &amp;&amp; source &quot;/var/www/&lt;app&gt;/shared/.env&quot;
+  set +a
+  cd &quot;/var/www/&lt;app&gt;/current&quot;
+  # RVM&#39;s wrapper binaries don&#39;t set rvm_path themselves — without it, RVM&#39;s
+  # stock per-ruby .irbrc falls through to requiring a personal ~/irbrc that
+  # usually doesn&#39;t exist, crashing irb/console for everyone.
+  export rvm_path=&quot;/usr/local/rvm&quot;
+  # Own logfile via shell redirection (&gt;&gt; ... 2&gt;&amp;1) — NOT systemd&#39;s
+  # StandardOutput=file:/StandardError=file:, and NOT a `-L`/`--logfile` CLI
+  # flag if the process doesn&#39;t have one (Sidekiq 6.0+ removed its own
+  # entirely). This is the one logging convention every bosun-managed
+  # worker uses — see the sidekiq-exec/sneaker-exec wrappers for other apps
+  # in this repo&#39;s scripts/ directory that already do this.
+  exec &quot;/usr/local/rvm/wrappers/${RUBY_VERSION}@${RUBY_GEMSET}/bundle&quot; exec &lt;your-command-here&gt; \
+    &gt;&gt; &quot;/var/www/&lt;app&gt;/shared/log/&lt;name&gt;.log&quot; 2&gt;&amp;1</code></pre>
+  <pre><code>chmod 755 /var/www/&lt;app&gt;/shared/bin/&lt;name&gt;-exec
+  sudo systemctl start &lt;name&gt;-&lt;app&gt;.service
+  tail -f /var/www/&lt;app&gt;/shared/log/&lt;name&gt;.log</code></pre>
+  <h3 id="worked-example-a-sneakers-rabbitmq-consumer">Worked example: a sneakers (RabbitMQ) consumer</h3>
+  <pre><code># unit: sneaker-myapp.service — ExecStart=/var/www/myapp/shared/bin/sneaker-exec
+  # shared/bin/sneaker-exec&#39;s exec line:
+  exec &quot;/usr/local/rvm/wrappers/${RUBY_VERSION}@${RUBY_GEMSET}/bundle&quot; exec rake sneakers:run \
+    &gt;&gt; &quot;/var/www/myapp/shared/log/sneaker.log&quot; 2&gt;&amp;1</code></pre>
+  <p>If the worker needs its own fixed config (which queue, concurrency) rather than a secret, bake it in as a plain <code>export</code> in the wrapper, same as <code>-q</code>/<code>-c</code> flags get baked into a <code>sidekiq-&lt;name&gt;-exec</code> wrapper — it isn't a secret, so it doesn't belong in <code>shared/.env</code>:</p>
+  <pre><code>export WORKERS=&quot;GhaProcessQueueWorker&quot;
+  export RM_WORKER=&quot;4&quot;</code></pre>
+  <h2 id="path-2-docker-instead-of-systemd">Path 2: Docker instead of systemd</h2>
+  <p>No unit file, no admin needed — <code>docker</code> is already fully whitelisted:</p>
+  <pre><code>sudo docker rm -f &lt;name&gt;-&lt;app&gt; 2&gt;/dev/null || true
+  sudo docker run -d --name &lt;name&gt;-&lt;app&gt; --restart unless-stopped \
+    -v &quot;/var/www/&lt;app&gt;/current:/app&quot; -w /app --env-file &quot;/var/www/&lt;app&gt;/shared/.env&quot; \
+    your-ruby-image bundle exec &lt;your-command-here&gt;</code></pre>
+  <p>Your deploy override then calls <code>docker stop|start|inspect &lt;name&gt;-&lt;app&gt;</code> wherever the systemd path below calls <code>systemctl</code>/<code>svc_active</code>.</p>
+  <h2 id="wiring-it-into-deploy">Wiring it into deploy</h2>
+  <p>The built-in <code>do-release</code> only knows about <code>puma-&lt;app&gt;</code>/<code>sidekiq-&lt;app&gt;</code>. A third service needs a per-app override — copy <code>do-release.sample</code> to <code>/var/www/&lt;app&gt;/shared/do-release</code>, <code>chmod +x</code> it, and:</p>
+  <ol type="1">
+  <li>Rename every <code>*_worker</code> function/variable to your service's name (e.g. <code>WORKER_UNIT</code> -&gt; <code>SNEAKER_UNIT</code>, matching the unit name from Path 1, or the container name from Path 2).</li>
+  <li>Swap the <code>systemctl stop/start</code>/<code>svc_active</code> calls in those renamed functions for <code>docker stop/start/inspect</code> if you went with Path 2.</li>
+  <li>Deploy once with no other changes first, to confirm the override and the new service both actually come up, before customizing further.</li>
+  </ol>
+  <p>See <code>do-release.sample</code>'s own header comment for the exact lines to touch — it already documents this swap in detail. <code>deployment/do-release</code> (the built-in default) now also prints a one-line, non-blocking warning on every deploy for an app with no override at all, as a safety net against a forgotten or mistyped <code>shared/do-release</code> — see its own comment.</p>
+  <h2 id="logging--the-one-rule-every-custom-service-should-follow">Logging — the one rule every custom service should follow</h2>
+  <p>Own logfile via shell redirection in the exec wrapper (<code>&gt;&gt; logfile 2&gt;&amp;1</code>), not systemd's <code>StandardOutput=file:</code>/<code>StandardError=file:</code> and not a process's own <code>-L</code>/<code>--logfile</code> flag if it has one. Three reasons this is the standard across every bosun-managed worker:</p>
+  <ul>
+  <li>A process-level flag might not exist (Sidekiq 6.0+ removed <code>-L</code>/<code>-P</code>/<code>-d</code> entirely — it expects an external supervisor, i.e. systemd, to own logging).</li>
+  <li><code>StandardOutput=file:</code> opens the file as root before systemd drops privileges to <code>webapp-svc</code> — if the process later reopens that same path itself (as Puma does for <code>config/puma.rb</code>'s own <code>stdout_redirect</code>), the reopen fails with <code>EACCES</code> because the file's now root-owned. See <a href="systemd.html">systemd.md</a>'s note on exactly this for Puma.</li>
+  <li>One convention, one place to look, regardless of which process it is — <code>tail -f shared/log/&lt;name&gt;.log</code> always works the same way.</li>
+  </ul>
+
+  <div class="links">
+    <a href="./index.html">Bosun overview</a>
+    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/custom-service.md">Edit on GitHub</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Bosun</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/bosun">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

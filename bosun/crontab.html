@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scheduled tasks: /etc/cron.d/&lt;app&gt; — Bosun</title>
+<meta name="description" content="sudo bosun add &lt;app-name&gt; writes /etc/cron.d/&lt;app-name&gt; automatically — fully commented out, so it has zero effect until you edit it. This doc covers the format, why it must run as webapp-svc, and how to confirm a job actually ran. Standalone mode (no argus-tty): ever">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.75rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  blockquote {
+    margin: 1rem 0; padding: 0.6rem 1rem; border-left: 3px solid #c7d2fe;
+    background: #eef2ff; color: #3730a3; font-size: 0.92rem;
+  }
+  blockquote p { margin: 0.3rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Bosun</a></p>
+    <h1>Scheduled tasks: /etc/cron.d/&lt;app&gt;</h1>
+    <p class="tagline">Why cron jobs run as <code>webapp-svc</code>, the generated format, and how to confirm a job actually ran.</p>
+  </header>
+
+  <p><code>sudo bosun add &lt;app-name&gt;</code> writes <code>/etc/cron.d/&lt;app-name&gt;</code> automatically — fully commented out, so it has zero effect until you edit it. This doc covers the format, why it must run as <code>webapp-svc</code>, and how to confirm a job actually ran.</p>
+  <blockquote>
+  <p><strong>Standalone mode (no argus-tty):</strong> every <code>webapp-svc</code> below is actually whatever account <code>/etc/bosun.conf</code> names (see <a href="standalone.html">standalone.md</a>) — the cron file <code>bosun add</code> generates already has the right name baked in for your host, so copy its own example line rather than the literal <code>webapp-svc</code> shown here.</p>
+  </blockquote>
+  <h2 id="the-file-bosun-add-generates">The file <code>bosun add</code> generates</h2>
+  <pre><code># /etc/cron.d/myapp — scheduled tasks for &#39;myapp&#39;.
+  #
+  # cron.d format has 6 fields, NOT 5 like a personal &#39;crontab -e&#39;:
+  #   min hour dom month dow  user  command
+  #
+  # Run as &#39;webapp-svc&#39; — the same unprivileged account puma/sidekiq already
+  # run as. It&#39;s the only account with a read grant on shared/.env, so any
+  # scheduled task that needs real app env vars loaded must run as this user
+  # via the generated shared/bin/run wrapper, not as root or a developer
+  # account.
+  #
+  # Example (uncomment and edit — runs daily at 02:30):
+  #30 2 * * *  webapp-svc  /var/www/myapp/shared/bin/run rake some:scheduled_task &gt;&gt; /var/www/myapp/shared/log/cron.log 2&gt;&amp;1</code></pre>
+  <p><code>bosun add</code> never overwrites this file on a re-run — same "leave existing content untouched" rule it applies to <code>shared/.env</code>/<code>deploy.conf</code> — so your edits are never clobbered.</p>
+  <h2 id="why-6-fields-and-why-etccrond-not-crontab--e">Why 6 fields, and why <code>/etc/cron.d/</code>, not <code>crontab -e</code></h2>
+  <p>A plain user's <code>crontab -e</code> has 5 fields (schedule + command) and is owned by that user. <code>/etc/cron.d/*</code> files are root-owned and need a 6th field — the user to run the command as — because one file can schedule jobs for multiple users. Using <code>/etc/cron.d/&lt;app&gt;</code> instead of <code>webapp-svc</code>'s own crontab is deliberate:</p>
+  <ul>
+  <li><code>webapp-svc</code> is a <code>nologin</code> system account (see <code>argus-tty</code>'s <code>AT_WEBAPPS_SVC_USER</code>) — it has no interactive shell for <code>crontab -e</code> to work cleanly with.</li>
+  <li>Keeping the schedule as a file under <code>/etc/cron.d/</code> keeps it next to the app's other generated config (systemd units, <code>deploy.conf</code>) instead of hidden inside <code>/var/spool/cron/</code>.</li>
+  </ul>
+  <h2 id="why-webapp-svc-specifically">Why <code>webapp-svc</code>, specifically</h2>
+  <p><code>shared/.env</code> (the app's secrets — <code>DATABASE_URL</code>, <code>SECRET_KEY_BASE</code>, etc.) is <code>root:root</code> 600 with a single named-user ACL read grant for <code>webapp-svc</code> — no group can read it, deliberately (see the main README's "Why a per-app <code>.env</code> file" section). <code>shared/bin/run</code> (generated by <code>bosun add</code> alongside the cron file) sources <code>deploy.conf</code> and <code>shared/.env</code>, then <code>exec</code>s your command under the app's RVM-resolved ruby/gemset. A cron job that doesn't run as <code>webapp-svc</code> calling this wrapper either can't read the env vars at all, or has to re-implement that loading itself — always prefer:</p>
+  <pre><code>&lt;schedule&gt;  webapp-svc  /var/www/&lt;app&gt;/shared/bin/run &lt;command&gt; &gt;&gt; /var/www/&lt;app&gt;/shared/log/cron.log 2&gt;&amp;1</code></pre>
+  <h2 id="requirements-for-the-file-to-actually-run">Requirements for the file to actually run</h2>
+  <ol type="1">
+  <li><strong>Owned by root</strong>, mode <code>644</code> — <code>bosun add</code> already sets this.</li>
+  <li><strong>Clean filename</strong> — lowercase letters/digits/<code>-</code>/<code>_</code> only, no dots, no <code>~</code>. The app name validation <code>bosun add</code> already enforces (<code>^[a-z][a-z0-9_-]{0,31}$</code>) satisfies this.</li>
+  <li>No restart/reload needed — cron re-scans <code>/etc/cron.d/</code> on its own.</li>
+  </ol>
+  <h2 id="verifying-a-job-actually-ran">Verifying a job actually ran</h2>
+  <pre><code>sudo -u webapp-svc /var/www/&lt;app&gt;/shared/bin/run rake some:scheduled_task  # run once by hand first
+  tail -f /var/www/&lt;app&gt;/shared/log/cron.log                                 # the job&#39;s own output
+  journalctl -u cron -f          # Debian/Ubuntu — follow live
+  grep CRON /var/log/syslog      # Debian/Ubuntu — history</code></pre>
+
+  <div class="links">
+    <a href="./index.html">Bosun overview</a>
+    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/crontab.md">Edit on GitHub</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Bosun</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/bosun">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

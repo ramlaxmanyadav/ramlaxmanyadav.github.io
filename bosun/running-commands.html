@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Running Rails commands and tailing logs — Bosun</title>
+<meta name="description" content="bosun run is a generic wrapper around rails for one app — console, migrations, a custom rake task, rails runner, anything listed by rails -T — not a fixed list of shortcuts. The app name is the last argument (everything before it forwards to rails verbatim, including its own flag">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.75rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  blockquote {
+    margin: 1rem 0; padding: 0.6rem 1rem; border-left: 3px solid #c7d2fe;
+    background: #eef2ff; color: #3730a3; font-size: 0.92rem;
+  }
+  blockquote p { margin: 0.3rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Bosun</a></p>
+    <h1>Running Rails commands and tailing logs</h1>
+    <p class="tagline"><code>bosun run</code> for console/rake/migrations, and <code>bosun logs</code> &mdash; both load <code>shared/.env</code> the same way Puma/Sidekiq do.</p>
+  </header>
+
+  <p><code>bosun run</code> is a generic wrapper around <code>rails</code> for one app — console, migrations, a custom rake task, <code>rails runner</code>, anything listed by <code>rails -T</code> — not a fixed list of shortcuts. The <strong>app name is the last argument</strong> (everything before it forwards to <code>rails</code> verbatim, including its own flags), unlike <code>install</code>/<code>setup</code>/<code>deploy</code>/<code>cleanup</code>, which take the app name first:</p>
+  <pre><code>bosun run console myapp                          # -&gt; bundle exec rails console
+  bosun run db:migrate myapp                        # -&gt; bundle exec rails db:migrate
+  bosun run db:migrate VERSION=20260101120000 myapp  # extra args forward too
+  bosun run runner &#39;puts User.count&#39; myapp           # quote multi-word args as one</code></pre>
+  <p>No sudo, no gem dependency, and it never touches <code>bundle</code>/<code>rails</code> directly itself — it resolves the app's <code>shared/bin/run</code> wrapper (created by <code>add</code>) and execs <code>rails "$@"</code> through it, so <code>RUBY_VERSION</code>/ <code>RUBY_GEMSET</code>/<code>deploy.conf</code>/<code>shared/.env</code> are loaded exactly the same way <code>puma</code>/<code>sidekiq</code> get them.</p>
+  <p><code>bosun logs</code> shows (or follows) an app's Rails log files under <code>shared/log/</code> — the same directory <code>current/log</code> symlinks to. No sudo needed; <code>shared/</code> is already <code>webapps</code>-group readable for every developer/ admin account:</p>
+  <pre><code>bosun logs myapp        # last 200 lines, then exit
+  bosun logs -t myapp     # follow (like tail -f), Ctrl-C to stop</code></pre>
+  <p>This is the app's own <code>Rails.logger</code> output (<code>log/production.log</code>, etc.) — for the puma/sidekiq <em>process's</em> stdout/stderr (crashes, boot errors before Rails.logger even starts), use <code>sudo journalctl -u puma-myapp</code> / <code>-u sidekiq-myapp</code> instead — already whitelisted for developers, no argument restriction.</p>
+
+  <div class="links">
+    <a href="./index.html">Bosun overview</a>
+    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/running-commands.md">Edit on GitHub</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Bosun</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/bosun">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

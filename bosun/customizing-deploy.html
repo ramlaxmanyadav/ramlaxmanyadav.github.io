@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Customizing deploy for one app — Bosun</title>
+<meta name="description" content="The built-in deploy (do-release) manages exactly puma + sidekiq for every app, unconditionally — no config knob to learn for the common case. If one specific app needs something different (a different background worker like sneakers instead of Sidekiq, extra build steps, a health">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.75rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  blockquote {
+    margin: 1rem 0; padding: 0.6rem 1rem; border-left: 3px solid #c7d2fe;
+    background: #eef2ff; color: #3730a3; font-size: 0.92rem;
+  }
+  blockquote p { margin: 0.3rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Bosun</a></p>
+    <h1>Customizing deploy for one app</h1>
+    <p class="tagline">Overriding <code>do-release</code> with a full script instead of a hook DSL &mdash; for one app, with a safe built-in fallback.</p>
+  </header>
+
+  <p>The built-in <code>deploy</code> (do-release) manages exactly puma + sidekiq for every app, unconditionally — no config knob to learn for the common case. If one specific app needs something different (a different background worker like <a href="https://github.com/jondot/sneakers">sneakers</a> instead of Sidekiq, extra build steps, a health check, whatever), override the whole script instead of configuring around the edges:</p>
+  <pre><code>cp /usr/lib/bosun/deploy/do-release.sample /var/www/myapp/shared/do-release
+  chmod +x /var/www/myapp/shared/do-release
+  vi /var/www/myapp/shared/do-release        # it&#39;s your script now, edit freely</code></pre>
+  <p><code>bosun deploy myapp &lt;branch&gt;</code> checks for <code>shared/do-release</code> first and, if it's present and executable, runs <em>that</em> instead of the built-in default — for <code>myapp</code> only, every other app on the box keeps using the default untouched. Copied-and-unedited it behaves identically to the built-in default, so the first useful step after copying it is deploying once with no changes, to confirm the override wiring itself works before customizing.</p>
+  <p>If an app has <strong>no</strong> override at all (or one that exists but isn't executable — e.g. someone forgot the <code>chmod +x</code> above), <code>deploy</code> doesn't fail or block: it prints a one-line, non-blocking warning to that effect and proceeds with the built-in puma+sidekiq default. This is just a safety net so a missing/mistyped override is visible in the deploy's own output instead of silently falling back with no trace — most apps are expected to never need an override at all. See <a href="custom-service.html">custom-service.md</a> for adding a third service this way.</p>
+  <p>This is a full script replacement, not a hook, so it can do anything a whitelisted developer/admin already can — different <code>systemctl</code> units, or run a worker via <code>docker</code> instead of systemd entirely (already fully whitelisted, and sidesteps the fact that developers have no way to create new unit files themselves). <code>do-release.sample</code>'s comments walk through both options for the "swap Sidekiq for a sneakers worker" example. What it can't do is grant new privileges — every <code>sudo</code> call in your override is still checked against the exact same developer/admin sudoers whitelist as everything else in argus-tty; writing your own script doesn't add to it.</p>
+
+  <div class="links">
+    <a href="./index.html">Bosun overview</a>
+    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/customizing-deploy.md">Edit on GitHub</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Bosun</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/bosun">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

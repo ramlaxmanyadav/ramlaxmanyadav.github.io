@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Who can do what (account tiers) — Bosun</title>
+<meta name="description" content="argus-tty has three account tiers; bosun enforces which of its own subcommands each one can run (require_role() in deployment/lib/common, checked against the caller's active session groups): Command developer deployer admin add (provision an app) — — root only bootstrap (RVM, one">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.75rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  blockquote {
+    margin: 1rem 0; padding: 0.6rem 1rem; border-left: 3px solid #c7d2fe;
+    background: #eef2ff; color: #3730a3; font-size: 0.92rem;
+  }
+  blockquote p { margin: 0.3rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Bosun</a></p>
+    <h1>Who can do what (account tiers)</h1>
+    <p class="tagline">The developer/deployer/admin permission table, and why <code>shared/.env</code> is locked tighter than the rest of the app tree.</p>
+  </header>
+
+  <p>argus-tty has three account tiers; bosun enforces which of its own subcommands each one can run (<code>require_role()</code> in <code>deployment/lib/common</code>, checked against the caller's <em>active</em> session groups):</p>
+  <table>
+  <thead>
+  <tr>
+  <th>Command</th>
+  <th style="text-align: center;">developer</th>
+  <th style="text-align: center;">deployer</th>
+  <th style="text-align: center;">admin</th>
+  </tr>
+  </thead>
+  <tbody>
+  <tr>
+  <td><code>add</code> (provision an app)</td>
+  <td style="text-align: center;">—</td>
+  <td style="text-align: center;">—</td>
+  <td style="text-align: center;">root only</td>
+  </tr>
+  <tr>
+  <td><code>bootstrap</code> (RVM, one time)</td>
+  <td style="text-align: center;">—</td>
+  <td style="text-align: center;">—</td>
+  <td style="text-align: center;">root only</td>
+  </tr>
+  <tr>
+  <td><code>install</code> / <code>setup</code></td>
+  <td style="text-align: center;">✓</td>
+  <td style="text-align: center;">—</td>
+  <td style="text-align: center;">✓</td>
+  </tr>
+  <tr>
+  <td><code>run</code> (console/rake) / <code>logs</code></td>
+  <td style="text-align: center;">✓</td>
+  <td style="text-align: center;">—</td>
+  <td style="text-align: center;">✓</td>
+  </tr>
+  <tr>
+  <td><code>deploy</code> / <code>cleanup</code></td>
+  <td style="text-align: center;">—</td>
+  <td style="text-align: center;">✓</td>
+  <td style="text-align: center;">✓</td>
+  </tr>
+  <tr>
+  <td><code>systemctl start/stop/restart</code> (via sudo)</td>
+  <td style="text-align: center;">✓</td>
+  <td style="text-align: center;">✓</td>
+  <td style="text-align: center;">✓</td>
+  </tr>
+  <tr>
+  <td><code>version</code> (bosun/RVM/app version info)</td>
+  <td style="text-align: center;">✓</td>
+  <td style="text-align: center;">✓</td>
+  <td style="text-align: center;">✓</td>
+  </tr>
+  <tr>
+  <td><code>mode</code> (view)</td>
+  <td style="text-align: center;">✓</td>
+  <td style="text-align: center;">✓</td>
+  <td style="text-align: center;">✓</td>
+  </tr>
+  <tr>
+  <td><code>mode &lt;name&gt;</code> (set)</td>
+  <td style="text-align: center;">—</td>
+  <td style="text-align: center;">—</td>
+  <td style="text-align: center;">root only</td>
+  </tr>
+  </tbody>
+  </table>
+  <p>A plain developer can't deploy; a plain deployer can't open a console, run rake, install deps, or tail logs. <code>version</code> and <code>mode</code> (viewing it) are the two exceptions with no <code>require_role()</code> gate at all — neither exposes anything sensitive (bosun's own version, RVM's version, an app's <code>deploy.conf</code> ruby/gemset; the configured/effective mode), so every tier can run them freely. Setting a mode (<code>sudo bosun mode &lt;name&gt;</code>) writes to <code>/etc/bosun.conf</code>, so that part is root-only regardless of tier. This whole table only applies when argus-tty is actually installed — in <a href="standalone.html">standalone mode</a> <code>require_role()</code> always passes, since there's only one account to enforce tiers against in the first place. Sudoers only covers the root-requiring parts (<code>systemctl</code>, <code>apt-get</code>, <code>docker</code>) — the actual file access (clone/bundle install/symlink/console) is plain Unix permissions under the <code>webapps</code> group, which is why bosun's own <code>require_role()</code> check exists: without it, anyone in <code>webapps</code> could run any subcommand regardless of their argus-tty tier.</p>
+  <p><code>shared/.env</code> (app secrets) is a stricter boundary still: it's readable by root and, via a single named-user ACL grant, the <code>webapp-svc</code> service account only — <strong>not</strong> the <code>webapps</code> group, so developer and deployer accounts can't read or edit it directly even though they're both <code>webapps</code> members. Admin edits it with <code>sudo vi shared/.env</code> (full sudo already covers this, no extra grant needed). A developer still gets a <strong>working</strong> <code>bosun run console myapp</code> with real secrets loaded: <code>run</code> elevates to <code>webapp-svc</code> via a narrowly-scoped sudoers grant (<code>sudo -u webapp-svc</code>, exact path only) instead of reading the file as themselves.</p>
+
+  <div class="links">
+    <a href="./index.html">Bosun overview</a>
+    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/permissions.md">Edit on GitHub</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Bosun</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/bosun">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

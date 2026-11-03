@@ -16,13 +16,12 @@ what argus-tty already whitelists.
 
 argus-tty is recommended, not required: without it, bosun falls back to a single-operator
 **standalone mode** automatically — no tiers, no separate service account, one account does
-everything — see [docs/standalone.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/standalone.md).
+everything — see [standalone mode](https://ramlaxmanyadav.github.io/bosun/standalone.html).
 
 ## Getting started
 
-- [README](https://github.com/ramlaxmanyadav/bosun/blob/main/README.md): install order, the
-  developer/deployer/admin permission table, provisioning an app, the full setup-from-scratch
-  walkthrough, and every CLI subcommand.
+- [README](https://github.com/ramlaxmanyadav/bosun/blob/main/README.md): installing (Launchpad PPA
+  or `.deb`) and a condensed quick start — the full reference lives in the docs below.
 - [llms-full.txt](https://ramlaxmanyadav.github.io/bosun/llms-full.txt): this file plus the complete
   content of the README and every `docs/*.md` file, concatenated into one fetch — for agents that
   prefer a single request over following links.
@@ -30,23 +29,38 @@ everything — see [docs/standalone.md](https://github.com/ramlaxmanyadav/bosun/
 
 ## Documentation
 
-- [docs/custom-service.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/custom-service.md):
+- [walkthrough](https://ramlaxmanyadav.github.io/bosun/walkthrough.html): the full walkthrough —
+  setting up a new app from scratch, every command, real sample output.
+- [permissions](https://ramlaxmanyadav.github.io/bosun/permissions.html): who can do what — the
+  developer/deployer/admin tier table, and why `shared/.env` is locked tighter than the rest of the
+  app tree.
+- [provisioning](https://ramlaxmanyadav.github.io/bosun/provisioning.html): everything `bosun add`
+  creates on disk — ACLs, `.env`, `deploy.conf`, systemd units, the git deploy key, RVM/gemsets — and
+  why.
+- [deploy-key](https://ramlaxmanyadav.github.io/bosun/deploy-key.html): the shared, per-app git
+  deploy key — one keypair distributed to every admin/deployer account, never developers, never a
+  personal key.
+- [running-commands](https://ramlaxmanyadav.github.io/bosun/running-commands.html): `bosun run`
+  (console/rake/migrations) and `bosun logs` — both load `shared/.env` the same way Puma/Sidekiq do.
+- [customizing-deploy](https://ramlaxmanyadav.github.io/bosun/customizing-deploy.html): overriding
+  `do-release` with a full script instead of a hook DSL, for one app only.
+- [custom-service](https://ramlaxmanyadav.github.io/bosun/custom-service.html):
   adding a third service beyond the built-in Puma+Sidekiq pair (a sneakers/RabbitMQ consumer, Docker
   instead of systemd, anything else) in bosun's own format — the exec-wrapper pattern, the systemd
   unit template, and the one logging convention every bosun-managed worker follows.
-- [docs/systemd.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/systemd.md): exactly what
+- [systemd](https://ramlaxmanyadav.github.io/bosun/systemd.html): exactly what
   `bosun add` generates for Puma/Sidekiq, the shipped reference `.service`/`.socket` samples, and
   optional socket activation.
-- [docs/crontab.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/crontab.md): the
+- [crontab](https://ramlaxmanyadav.github.io/bosun/crontab.html): the
   `/etc/cron.d/<app>` format bosun generates, why scheduled tasks must run as `webapp-svc`, and how to
   verify a job actually ran.
-- [docs/ruby-version.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/ruby-version.md):
+- [ruby-version](https://ramlaxmanyadav.github.io/bosun/ruby-version.html):
   changing an app's Ruby version — the install/deploy sequence, and how old-version cleanup stays safe
   on a host where several apps share one RVM install.
-- [docs/standalone.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/standalone.md): running
+- [standalone](https://ramlaxmanyadav.github.io/bosun/standalone.html): running
   bosun without argus-tty — what single-operator standalone mode changes, the `/etc/bosun.conf`
   persisted-account file, and the security tradeoff it accepts.
-- [docs/nginx.md](https://github.com/ramlaxmanyadav/bosun/blob/main/docs/nginx.md): reverse-proxying
+- [nginx](https://ramlaxmanyadav.github.io/bosun/nginx.html): reverse-proxying
   to the Puma unix socket (bosun doesn't manage nginx itself).
 
 ## Guides
@@ -64,8 +78,8 @@ everything — see [docs/standalone.md](https://github.com/ramlaxmanyadav/bosun/
 
 ```bash
 # One time per host:
-sudo apt install ./argus-tty_1.0.0_all.deb
-sudo apt install ./bosun_1.0.0_all.deb
+sudo add-apt-repository ppa:yadavramlaxman/argus-tty && sudo add-apt-repository ppa:yadavramlaxman/bosun
+sudo apt update && sudo apt install argus-tty bosun
 sudo bosun bootstrap                   # installs RVM multi-user
 
 # One time per app:
@@ -92,6 +106,8 @@ bosun deploy myapp main
 - `bosun run <rails-args...> <app-name>` — any `rails` command/task, env loaded via `shared/bin/run`
   (developer/admin).
 - `bosun logs [-t] <app-name>` — show or follow an app's Rails logs (developer/admin).
+- `bosun mode [name]` — view or switch between argus-tty and standalone mode (view: any tier; set:
+  root only).
 - `bosun version [app-name]` — bosun's own version, RVM's version, and (given an app) its configured
   ruby/gemset — the one subcommand with no role restriction at all, since it exposes nothing
   sensitive.
@@ -99,5 +115,5 @@ bosun deploy myapp main
 ## Links
 
 - [GitHub repo](https://github.com/ramlaxmanyadav/bosun)
-- [argus-tty](https://github.com/ramlaxmanyadav/argus-tty) (recommended — see docs/standalone.md for running without it)
+- [argus-tty](https://github.com/ramlaxmanyadav/argus-tty) (recommended — see the standalone doc for running without it)
 - [This site's index](https://ramlaxmanyadav.github.io/bosun/)

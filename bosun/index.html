@@ -88,7 +88,7 @@ sudo bosun bootstrap                         # one time per host: RVM multi-user
 
   <p style="font-size:0.9rem;color:#475569;">
     No argus-tty? Skip the first line — bosun falls back to a single-operator
-    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/standalone.md">standalone mode</a>
+    <a href="./standalone.html">standalone mode</a>
     automatically: no tiers, no separate service account, one account does everything. A deliberately
     reduced security posture for one person on their own box, not a lighter-weight substitute for
     argus-tty on a shared one.
@@ -118,7 +118,7 @@ bosun deploy myapp main           # clone, build, symlink, restart, rollback-on-
       bash, not a hook/plugin DSL, for a different worker (a
       <a href="https://github.com/jondot/sneakers">sneakers</a> consumer instead of Sidekiq, Docker
       instead of systemd, extra build steps) — every other app on the box keeps the default untouched.
-      See <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/custom-service.md">adding a
+      See <a href="./custom-service.html">adding a
       custom service</a>.</li>
   </ul>
 
@@ -146,6 +146,33 @@ bosun deploy myapp main           # clone, build, symlink, restart, rollback-on-
     re-test of every release — re-check before quoting externally.
   </p>
 
+  <h2>Documentation</h2>
+  <ul>
+    <li><a href="./walkthrough.html">Walkthrough: setting up a new app from scratch</a> — every
+      command, real sample output, from a fresh host to a first deploy.</li>
+    <li><a href="./permissions.html">Who can do what</a> — the developer/deployer/admin permission
+      table.</li>
+    <li><a href="./provisioning.html">Provisioning an app</a> — everything <code>bosun add</code>
+      creates on disk, and why.</li>
+    <li><a href="./deploy-key.html">Git deploy key</a> — one shared keypair per app, distributed to
+      every admin/deployer account, never a personal key.</li>
+    <li><a href="./running-commands.html">Running Rails commands and tailing logs</a> —
+      <code>bosun run</code> (console/rake/migrations) and <code>bosun logs</code>.</li>
+    <li><a href="./customizing-deploy.html">Customizing deploy for one app</a> — overriding
+      <code>do-release</code> with a full script instead of a hook DSL.</li>
+    <li><a href="./custom-service.html">Adding a custom service</a> — a third long-running process
+      beyond Puma+Sidekiq, in bosun's own format.</li>
+    <li><a href="./systemd.html">systemd units</a> — what <code>bosun add</code> generates for
+      Puma/Sidekiq, and optional socket activation.</li>
+    <li><a href="./crontab.html">Scheduled tasks</a> — the <code>/etc/cron.d/&lt;app&gt;</code>
+      format bosun generates.</li>
+    <li><a href="./ruby-version.html">Changing an app's Ruby version</a> — safely, on a host where
+      several apps share one RVM install.</li>
+    <li><a href="./standalone.html">Standalone mode</a> — running bosun with no argus-tty
+      installed.</li>
+    <li><a href="./nginx.html">Reverse-proxying with nginx</a> — the Puma unix socket config.</li>
+  </ul>
+
   <h2>Guides</h2>
   <ul>
     <li><a href="./secrets-locked-to-one-service-account.html">Why bosun locks secrets to one service
@@ -163,11 +190,7 @@ bosun deploy myapp main           # clone, build, symlink, restart, rollback-on-
   <div class="links">
     <a href="https://github.com/ramlaxmanyadav/bosun">GitHub repo</a>
     <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/README.md">Full README</a>
-    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/custom-service.md">Custom service docs</a>
-    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/systemd.md">systemd docs</a>
-    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/crontab.md">crontab docs</a>
-    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/ruby-version.md">ruby version docs</a>
-    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/standalone.md">standalone mode docs</a>
+    <a href="https://github.com/ramlaxmanyadav/argus-tty">argus-tty</a>
     <a href="./llms.txt">llms.txt</a>
     <a href="./llms-full.txt">llms-full.txt</a>
   </div>

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Standalone mode (no argus-tty) — Bosun</title>
+<meta name="description" content="Bosun is built around argus-tty's multi-tenant account model — developer/ deployer/admin tiers, a sudoers whitelist, a dedicated unprivileged webapp-svc service account that secrets are ACL-locked to. If argus-tty isn't installed, bosun no longer refuses to run: it falls back to ">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.75rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  blockquote {
+    margin: 1rem 0; padding: 0.6rem 1rem; border-left: 3px solid #c7d2fe;
+    background: #eef2ff; color: #3730a3; font-size: 0.92rem;
+  }
+  blockquote p { margin: 0.3rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← Bosun</a></p>
+    <h1>Standalone mode (no argus-tty)</h1>
+    <p class="tagline">Running bosun with no argus-tty installed &mdash; the single-operator fallback, the security tradeoff, and switching modes explicitly.</p>
+  </header>
+
+  <p>Bosun is built around argus-tty's multi-tenant account model — developer/ deployer/admin tiers, a sudoers whitelist, a dedicated unprivileged <code>webapp-svc</code> service account that secrets are ACL-locked to. If argus-tty isn't installed, bosun no longer refuses to run: it falls back to a <strong>standalone mode</strong> for a single operator on their own box instead. This doc covers exactly what that mode is, what it isn't, and the tradeoff you're accepting by using it.</p>
+  <h2 id="when-it-kicks-in">When it kicks in</h2>
+  <p>By default (<code>BOSUN_MODE=auto</code>, or nothing set at all): automatically, the moment <code>/usr/lib/argus-tty/lib/common.sh</code> isn't found — no flag to pass, nothing to configure. argus-tty installed takes priority whenever it's present; standalone is purely the fallback for when it isn't. Every bosun subcommand checks for it independently (<code>deployment/lib/common</code>, <code>bin/add.sh</code>, and <code>deployment/bootstrap</code> each do their own check), so there's no scenario where half of bosun thinks argus-tty is installed and half doesn't.</p>
+  <p>You can also choose explicitly, overriding auto-detection either way — see "Switching modes with <code>bosun mode</code>" below. Both of these are real, supported uses of that:</p>
+  <ul>
+  <li>Forcing standalone on a box that <strong>has</strong> argus-tty installed (for other reasons, or temporarily, without uninstalling it).</li>
+  <li>Forcing argus-tty strictly, so bosun errors loudly instead of silently degrading to standalone if argus-tty ever goes missing by accident on a host where secret isolation matters.</li>
+  </ul>
+  <h2 id="what-actually-changes">What actually changes</h2>
+  <ul>
+  <li><strong>No tiers.</strong> <code>require_role()</code> always passes — there's no developer/deployer/admin distinction to enforce when there's only one account using bosun at all.</li>
+  <li><strong>No separate service account.</strong> <code>AT_WEBAPPS_SVC_USER</code> — the account Puma/Sidekiq run as, and the only account with ACL read access to <code>shared/.env</code> — becomes <strong>the same account that ran <code>sudo bosun add</code></strong>, not a dedicated unprivileged one. Everywhere bosun normally elevates to that service account (<code>bosun run</code>, the <code>assets:precompile</code> step in <code>do-release.sample</code>) skips the elevation entirely instead, since you're already that account.</li>
+  <li><strong>One deploy key copy, not a distribution list.</strong> <code>distribute_deploy_key</code> normally scans every admin/deployer account on the host; in standalone mode there's exactly one account to give a copy to.</li>
+  <li><strong>A bosun-owned group</strong>, <code>bosun-apps</code>, created automatically if it doesn't exist — standing in for argus-tty's <code>webapps</code> group. The standalone account is added to it automatically so it can run <code>install</code>/<code>setup</code>/<code>deploy</code>/<code>run</code> without needing <code>sudo</code> for everything, the same way argus-tty would have put a developer/admin account there.</li>
+  <li><strong><code>AT_RVM_ROOT</code> stays <code>/usr/local/rvm</code></strong> — RVM's multi-user path was never actually argus-tty's to provide; <code>bosun bootstrap</code> installs it either way.</li>
+  </ul>
+  <h2 id="the-tradeoff--read-this-before-you-rely-on-it">The tradeoff — read this before you rely on it</h2>
+  <p><strong>This is the actual thing argus-tty mode gives you that standalone mode doesn't: secrets stop being isolated from the deploying account.</strong> There's no second, unprivileged identity for <code>shared/.env</code> to be locked away from — the one account that can run <code>bosun deploy</code> can also just read <code>DATABASE_URL</code>/<code>SECRET_KEY_BASE</code> directly, because it's the same account Puma/Sidekiq run as. If you add a second human to this box later, they either share full access to the same account, or you're back to needing argus-tty's tier model — standalone mode is for exactly one operator, not a lighter-weight multi-user mode.</p>
+  <h2 id="quick-start">Quick start</h2>
+  <p>Nothing different from the normal walkthrough — just skip installing argus-tty:</p>
+  <pre><code>sudo apt install ./bosun_1.0.0_all.deb   # argus-tty not installed — standalone mode
+  # or: sudo add-apt-repository ppa:yadavramlaxman/bosun &amp;&amp; sudo apt update &amp;&amp; sudo apt install bosun
+  sudo bosun bootstrap                     # RVM multi-user, same as always
+
+  sudo bosun add myapp
+  #  [WARN] Added &#39;you&#39; to &#39;bosun-apps&#39; — log out and back in to pick it up...
+  # log out, log back in
+
+  vi /var/www/myapp/shared/deploy.conf
+  sudo vi /var/www/myapp/shared/.env
+  bosun install myapp
+  bosun setup myapp
+  bosun deploy myapp main</code></pre>
+  <h2 id="you-only-set-this-once--etcbosunconf">You only set this once — <code>/etc/bosun.conf</code></h2>
+  <p>The standalone account defaults to whoever ran <code>sudo</code> (<code>$SUDO_USER</code>). The <strong>first</strong> standalone command that resolves it this way — normally <code>bosun bootstrap</code>, since that's step one in the walkthrough, or <code>bosun add</code> if bootstrap already ran before argus-tty was removed — saves it to <code>/etc/bosun.conf</code> automatically:</p>
+  <pre><code>sudo bosun bootstrap
+  # [INFO] Saved standalone account &#39;you&#39; to /etc/bosun.conf — future bosun
+  # commands won&#39;t need BOSUN_STANDALONE_USER set.</code></pre>
+  <p>Every bosun command after that — <code>install</code>, <code>setup</code>, <code>deploy</code>, <code>run</code>, <code>version</code>, even run directly as yourself with no <code>sudo</code> at all — reads it from there with nothing to pass:</p>
+  <pre><code>cat /etc/bosun.conf
+  # BOSUN_STANDALONE_USER=you
+
+  bosun install myapp     # just works, no env var needed</code></pre>
+  <p><code>/etc/bosun.conf</code> is created once and never overwritten automatically (same idiom as <code>deploy.conf</code>/<code>shared/.env</code>) — edit it by hand if you ever need to change the saved account.</p>
+  <h2 id="bosun_standalone_user--overriding-it-or-before-its-ever-been-saved"><code>BOSUN_STANDALONE_USER</code> — overriding it, or before it's ever been saved</h2>
+  <p>Two cases need this set explicitly instead of relying on <code>/etc/bosun.conf</code>: a literal root login with no <code>sudo</code> involved at all (no <code>$SUDO_USER</code> to read, and nothing saved yet — bosun errors out clearly rather than guess), or a CI/automation account that should use a different name than whatever ends up in <code>/etc/bosun.conf</code>. An explicit value always wins over the saved one, for that one invocation only:</p>
+  <pre><code>sudo BOSUN_STANDALONE_USER=deploy bosun add myapp
+  BOSUN_STANDALONE_USER=deploy bosun install myapp
+  BOSUN_STANDALONE_USER=deploy bosun deploy myapp main</code></pre>
+  <p>Whatever you pass must already exist as a real system account — bosun checks (<code>id &lt;name&gt;</code>) and errors out immediately if it doesn't, rather than half-provisioning an app around a name that resolves to nothing.</p>
+  <h2 id="switching-modes-with-bosun-mode">Switching modes with <code>bosun mode</code></h2>
+  <pre><code>bosun mode                  # show the configured AND effective mode right now
+  sudo bosun mode standalone  # force standalone, even if argus-tty IS installed
+  sudo bosun mode argus-tty   # require argus-tty — error instead of silently falling back
+  sudo bosun mode auto        # back to the default (use argus-tty if present, else standalone)</code></pre>
+  <p><code>bosun mode</code> (no argument) is read-only and needs no special privilege — setting one writes to <code>/etc/bosun.conf</code>, so that needs root. It persists the <code>BOSUN_MODE=</code> line in the same file <code>BOSUN_STANDALONE_USER=</code> already lives in, never touching the other — switching modes doesn't lose a standalone account you'd already saved, and saving a standalone account later doesn't lose a mode you'd already chosen.</p>
+  <p>An explicit <code>BOSUN_MODE=argus-tty bosun install myapp</code> (or <code>standalone</code>) for one command still overrides whatever's persisted, same precedence as <code>BOSUN_STANDALONE_USER</code> above.</p>
+  <h3 id="migrating-existing-apps-after-a-switch--no-re-deploy-needed">Migrating existing apps after a switch — no re-deploy needed</h3>
+  <p>Switching the host-wide mode doesn't touch anything already on disk — your apps' code, releases, and <code>shared/.env</code> <em>content</em> are completely unaffected. What's now stale is <strong>who's allowed to read it</strong>: file ownership, the ACL grant on <code>shared/.env</code>, and the systemd units' <code>User=</code> were all set up under the OLD mode's service account. For each existing app:</p>
+  <pre><code>sudo bosun add myapp    # idempotent — re-applies ownership/ACL/unit files
+                           # for the mode you just switched to; leaves code,
+                           # deploy.conf values, and shared/.env CONTENT alone
+  bosun restart myapp     # picks up the new systemd User= for puma/sidekiq</code></pre>
+  <p>Re-running <code>add</code> here does one thing worth knowing about: it checks every named-user entry on <code>shared/.env</code>'s ACL and strips any that aren't the <em>current</em> <code>AT_WEBAPPS_SVC_USER</code> — so moving from argus-tty's <code>webapp-svc</code> to a standalone account's name (or back) actually revokes the old account's standing read access, not just adds the new one alongside it.</p>
+  <p><strong>One thing switching can't undo:</strong> if you were in standalone mode, that one account already had <code>shared/.env</code> readable directly (that's the whole tradeoff — see above). Moving to argus-tty mode locks it down going forward, but doesn't erase the fact that account could already read <code>SECRET_KEY_BASE</code>/<code>DATABASE_URL</code>. Treat a standalone-to-argus-tty move as a signal to rotate those if this box is going from single- to multi-operator.</p>
+
+  <div class="links">
+    <a href="./index.html">Bosun overview</a>
+    <a href="https://github.com/ramlaxmanyadav/bosun/blob/main/docs/standalone.md">Edit on GitHub</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    Part of <a href="./index.html">Bosun</a>. MIT licensed. Source on
+    <a href="https://github.com/ramlaxmanyadav/bosun">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>
