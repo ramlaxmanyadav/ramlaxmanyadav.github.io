@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>argus-tty — Tiered, Recorded Linux Accounts for a Shared Ubuntu Host</title>
+<meta name="description" content="argus-tty is a .deb-packaged CLI that provisions developer/admin/deployer Linux accounts on a shared Ubuntu box, forces every SSH session through a TTY recorder via sshd's ForceCommand, and ships the logs to S3 with an email ping on connect/disconnect.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<meta property="og:type" content="website">
+<meta property="og:title" content="argus-tty — Tiered, Recorded Linux Accounts for a Shared Ubuntu Host">
+<meta property="og:description" content="Provisions developer/admin/deployer Linux accounts, forces every SSH session through a TTY recorder, and ships the logs to S3 — with no shared root account and no way to opt out of recording.">
+<meta property="og:url" content="https://ramlaxmanyadav.github.io/argus-tty/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="argus-tty — Tiered, Recorded Linux Accounts for a Shared Ubuntu Host">
+<meta name="twitter:description" content="Provisions developer/admin/deployer Linux accounts, forces every SSH session through a TTY recorder, and ships the logs to S3 — with no shared root account and no way to opt out of recording.">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  h1 { font-size: 1.9rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  .badges { margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .badges a { text-decoration: none; }
+  .badge {
+    display: inline-block; font-size: 0.78rem; font-weight: 600; padding: 0.3rem 0.7rem;
+    border-radius: 999px; background: #eef2ff; color: #3730a3; border: 1px solid #e0e7ff;
+  }
+  h2 { font-size: 1.15rem; margin-top: 2.5rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a {
+    color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem;
+  }
+  .links a:hover { text-decoration: underline; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  td:not(:first-child) { text-align: center; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>One package to onboard an SSH account and make its sessions impossible to not record.</h1>
+    <p class="tagline">argus-tty provisions developer/admin/deployer Linux accounts on a shared
+      Ubuntu host and forces every one of their sessions through a TTY recorder via sshd's own
+      <code>ForceCommand</code> — logs ship to S3, with an email ping on connect/disconnect.</p>
+    <div class="badges">
+      <a href="./installing-argus-tty.html"><span class="badge">Launchpad PPA</span></a>
+      <a href="https://github.com/ramlaxmanyadav/argus-tty/releases"><span class="badge">.deb package</span></a>
+      <a href="https://github.com/ramlaxmanyadav/argus-tty/blob/main/LICENSE"><span class="badge">MIT licensed</span></a>
+      <a href="https://github.com/ramlaxmanyadav/argus-tty"><span class="badge">GitHub</span></a>
+    </div>
+  </header>
+
+  <p>
+    <strong>The problem argus-tty solves isn't "how do I let a team SSH into a box" — that's one
+    line in <code>authorized_keys</code>. It's "how do I do that and still answer, after the fact,
+    exactly who ran what, when, and what the session actually contained" — without a single shared
+    root account that nobody can attribute to a person.</strong> Every onboarded account is a real
+    Linux account, in one of three tiers, and every one of them — developer, admin, or deployer,
+    no exceptions — has its session forced through a recorder by an sshd <code>Match</code> block
+    that a user's own <code>~/.ssh/authorized_keys</code> cannot override.
+  </p>
+
+  <pre><code>sudo add-apt-repository ppa:yadavramlaxman/argus-tty
+sudo apt update && sudo apt install argus-tty   # or the .deb package — see Installing below
+
+sudo argus-tty add dev1 --name "Alice Kumar" --pubkey dev1_id_ed25519.pub
+sudo argus-tty status   # confirm sshd/sudoers/systemd are all wired up</code></pre>
+
+  <p style="font-size:0.9rem;color:#475569;">
+    Full install guide, including the <code>.deb</code>-package alternative and bulk onboarding:
+    <a href="./installing-argus-tty.html">Installing argus-tty</a>.
+  </p>
+
+  <h2>What it does</h2>
+  <ul>
+    <li><strong>Three Linux account tiers, each individually attributable</strong> —
+      <code>developer</code> (scoped sudo via a command whitelist), <code>admin</code> (full,
+      unrestricted sudo, onboard sparingly), and <code>deployer</code> (the narrowest tier:
+      start/stop/restart services only). No tier is a shared account.</li>
+    <li><strong>Recording nobody can opt out of</strong> — the sshd <code>Match Group
+      developer,admin,deployer</code> block's <code>ForceCommand</code> always wins over anything
+      in a user's own <code>authorized_keys</code>, so every session, admin sessions included, is
+      captured as a full TTY transcript (<code>script</code>) plus command history.</li>
+    <li><strong>Three privilege-separated helpers, not one process that does everything</strong> —
+      <code>argus-tty-wrapper</code> (runs as the connecting user, records the session, never
+      touches credentials), <code>argus-tty-finalize</code> (same uid, uploads to S3 via the
+      instance's IAM role — no access keys on disk), and <code>argus-tty-mailer</code> (root-only,
+      the only process that ever reads the SMTP password). See
+      <a href="./ssh-session-recording-architecture.html">why they're split this way</a>.</li>
+    <li><strong>Everything optional and non-blocking</strong> — S3 upload and email are both off by
+      default and gated by their own master switch; local session recording to disk always happens
+      regardless of whether either integration is configured or reachable.</li>
+    <li><strong>Optional Google Authenticator 2FA</strong> — a second factor on top of the SSH key
+      for developer/admin sessions, with deployer accounts always exempt.</li>
+    <li><strong>A real, upgradable <code>.deb</code></strong> — <code>apt install</code>/
+      <code>apt remove</code>/<code>apt purge</code> to a fleet, not <code>scp -r</code> and hope;
+      a PPA so upgrades arrive via ordinary <code>apt upgrade</code>.</li>
+  </ul>
+
+  <h2>Account tiers at a glance</h2>
+  <table>
+    <tr><th>Capability</th><th>developer</th><th>admin</th><th>deployer</th></tr>
+    <tr><td>sudo</td><td>whitelist (systemctl/apt-get/kill/docker)</td><td>full, unrestricted</td><td>narrower whitelist: start/stop/restart services only</td></tr>
+    <tr><td><code>sudo su</code> / direct <code>su</code></td><td>—</td><td>✓</td><td>—</td></tr>
+    <tr><td>Session recorded (TTY + history)</td><td>✓</td><td>✓</td><td>✓</td></tr>
+    <tr><td>Google Authenticator 2FA (if enabled)</td><td>✓</td><td>✓</td><td>exempt</td></tr>
+    <tr><td><code>webapps</code>/<code>rvm</code> group membership</td><td>✓</td><td>✓</td><td>✓</td></tr>
+  </table>
+  <p style="font-size:0.85rem;color:#94a3b8;">
+    The whitelist contents, the three tier names, and which group an account lands in are all
+    config, not hard-coded — see the full
+    <a href="https://github.com/ramlaxmanyadav/argus-tty/blob/main/README.md#configuration-reference">configuration reference</a>.
+  </p>
+
+  <h2>Guides</h2>
+  <ul>
+    <li><a href="./ssh-session-recording-architecture.html">Why SSH session recording is split
+      across three privilege-separated processes</a> — the wrapper/finalize/mailer split, why
+      <code>ForceCommand</code> can't be bypassed, and why an IAM instance role is the only correct
+      way to give every account S3 access.</li>
+    <li><a href="./installing-argus-tty.html">Installing argus-tty</a> — the Launchpad PPA
+      (recommended) or the <code>.deb</code> package, onboarding your first developer/admin/deployer
+      accounts, and verifying the install.</li>
+  </ul>
+
+  <h2>Links</h2>
+  <div class="links">
+    <a href="https://github.com/ramlaxmanyadav/argus-tty">GitHub repo</a>
+    <a href="https://github.com/ramlaxmanyadav/argus-tty/blob/main/README.md">Full README</a>
+    <a href="https://github.com/ramlaxmanyadav/argus-tty/blob/main/PACKAGING.md">Publishing a PPA</a>
+    <a href="https://github.com/ramlaxmanyadav/bosun">Used by Bosun</a>
+    <a href="./llms.txt">llms.txt</a>
+    <a href="./llms-full.txt">llms-full.txt</a>
+  </div>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/argus-tty">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Why SSH Session Recording Is Split Across Three Privilege-Separated Processes — argus-tty</title>
+<meta name="description" content="Why argus-tty splits session recording, S3 upload, and email notification into three separate processes (wrapper/finalize/mailer) with different privilege levels, why sshd's ForceCommand can't be bypassed from authorized_keys, and why an IAM instance role is the only correct way to give every account S3 access.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Why SSH Session Recording Is Split Across Three Privilege-Separated Processes">
+<meta property="og:description" content="The wrapper/finalize/mailer split in argus-tty, why ForceCommand can't be bypassed, and why an IAM instance role is the only correct way to give every account S3 access.">
+<meta property="og:url" content="https://ramlaxmanyadav.github.io/argus-tty/ssh-session-recording-architecture.html">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Why SSH Session Recording Is Split Across Three Privilege-Separated Processes">
+<meta name="twitter:description" content="The wrapper/finalize/mailer split in argus-tty, why ForceCommand can't be bypassed, and why an IAM instance role is the only correct way to give every account S3 access.">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← argus-tty</a></p>
+    <h1>Why SSH Session Recording Is Split Across Three Privilege-Separated Processes</h1>
+    <p class="tagline">Recording a session, uploading it, and emailing about it sound like one job.
+      argus-tty deliberately gives each one its own process, running as a different identity — and
+      the reason is the same reason you wouldn't want one process doing all three in the first
+      place.</p>
+  </header>
+
+  <h2>Three helpers, three identities</h2>
+  <p>
+    A session touches three distinct pieces of sensitive material: the transcript itself, an AWS
+    credential to ship that transcript to S3, and an SMTP password to email about it. argus-tty
+    runs a separate helper for each, and only one of them ever runs as root:
+  </p>
+  <ul>
+    <li><strong><code>argus-tty-wrapper</code></strong> — runs as whichever developer, admin, or
+      deployer just connected. It's what sshd's <code>ForceCommand</code> actually invokes; it
+      records the full TTY transcript via <code>script</code> and the command history to
+      <code>/var/log/argus-tty/sessions/</code>. It never talks to AWS or SMTP at all.</li>
+    <li><strong><code>argus-tty-finalize</code></strong> — also runs as the connecting user's own
+      uid, not root. It handles the best-effort immediate upload to S3 at logout, authenticating
+      via the instance's IAM role. Because it runs unprivileged, a compromised developer account
+      can see its own session files (expected — it generated them) but has no broader access as a
+      side effect of upload happening at all.</li>
+    <li><strong><code>argus-tty-mailer</code></strong> — the only one of the three that runs as
+      root, driven by a systemd timer every 30 seconds. It's also the <em>only</em> process on the
+      box that ever reads <code>/etc/argus-tty/smtp-credentials.env</code> (600, root-only). The
+      wrapper never reads that file — it just queues a small local file describing the
+      notification, an instant, network-free write, and lets the mailer pick it up later.</li>
+  </ul>
+  <p>
+    The effect: a developer or admin session — including a fully unrestricted admin one — never
+    runs in a process that has read access to the SMTP password, because that process doesn't run
+    as root and never has access to the file. Splitting the mailer out isn't about trusting admins
+    less; it's that "the session-handling code never has the credential" is a strictly stronger
+    guarantee than "the session-handling code is trusted not to leak the credential."
+  </p>
+
+  <h2>Why <code>ForceCommand</code> can't be skipped</h2>
+  <p>
+    Every onboarded account still owns a normal <code>~/.ssh/authorized_keys</code> file — that's
+    how their key authenticates at all. What stops someone from adding their own
+    <code>command="..."</code> prefix to a key entry and skipping the recorder entirely is ordering,
+    not a filesystem permission: OpenSSH evaluates a <code>Match</code> block's
+    <code>ForceCommand</code> directive in <code>sshd_config</code> <em>after</em> authentication
+    succeeds, and a <code>ForceCommand</code> set inside a <code>Match</code> block always
+    overrides any <code>command=</code> restriction a user's own <code>authorized_keys</code> entry
+    tries to set. The user-level file still controls things like IP restriction
+    (<code>from="..."</code>, see argus-tty's own <code>allow-ip</code> subcommand) — it just never
+    gets the final word on what command actually runs. That's a property of sshd itself, not
+    something argus-tty's configuration could accidentally leave a gap in, which is also why the
+    <code>Match Group developer,admin,deployer</code> block applies identically to admins: more
+    privilege doesn't buy an exemption from the same mechanism.
+  </p>
+
+  <h2>Why an IAM instance role, not per-account credentials</h2>
+  <p>
+    <code>argus-tty-finalize</code> runs as whichever account is currently connected — that's the
+    whole point of attributing an upload to the session that produced it — which means it needs
+    AWS credentials that resolve <em>the same way for every current and future account</em>, not
+    just whichever one an admin happened to run <code>aws configure</code> on. A personal
+    <code>~/.aws/credentials</code> file only ever authenticates the one Linux account it's written
+    into; it does nothing for any other developer, admin, or deployer account, and a file left in
+    one account's home directory actually takes priority over an instance role for that one
+    account specifically — so a stale per-user workaround can silently mask the real fix.
+  </p>
+  <p>
+    The mechanism that actually satisfies "every account, no per-account setup" is an
+    <strong>EC2 instance role</strong>, attached once at the AWS account level, outside the box
+    entirely. Every account resolves the same role automatically via the instance metadata service
+    — nothing to configure per developer, and nothing that needs redoing when a new one is
+    onboarded. If <code>argus-tty status</code> reports no usable credentials, that's almost always
+    a missing instance role, not a missing per-user config file. When an instance role genuinely
+    isn't an option — most commonly a cross-account bucket — argus-tty's documented fallback is one
+    shared, group-readable credentials file every account is pointed at via
+    <code>/etc/environment</code>, which is explicitly a trade-off (one static credential shared
+    across accounts) rather than a free alternative; see the
+    <a href="https://github.com/ramlaxmanyadav/argus-tty/blob/main/README.md#when-an-instance-role-genuinely-isnt-an-option">README's own treatment</a>
+    of that fallback for the specifics.
+  </p>
+
+  <h2>Non-blocking by construction, not by convention</h2>
+  <p>
+    None of this is allowed to put a login session on the hook for a network call. The immediate S3
+    upload attempt runs fully detached (<code>nohup</code> + <code>setsid</code>, with a hard
+    <code>timeout</code> ceiling) specifically so it can't hold a session's connection open at
+    logout, and a separate <code>argus-tty-s3-sync.timer</code> sweeps every two minutes,
+    completely decoupled from any live session, to pick up anything the fast path missed — it only
+    ever touches a session's files once the wrapper has marked them finished. Email is just a local
+    file write on the wrapper's side; the mailer's own retry loop (every 30 seconds, up to five
+    attempts) is what actually gets it delivered. If the aws CLI isn't installed, no credentials
+    resolve, or SMTP is unreachable, each helper detects that up front and logs a warning via
+    <code>logger -t argus-tty</code> instead of erroring — session recording to local disk always
+    happens regardless of whether either integration is even configured.
+  </p>
+
+  <h2>Further reading</h2>
+  <ul>
+    <li><a href="./installing-argus-tty.html">Installing argus-tty</a> — the PPA/.deb install,
+      onboarding your first accounts, and verifying sshd/sudoers/systemd came up correctly.</li>
+    <li><a href="https://github.com/ramlaxmanyadav/argus-tty/blob/main/README.md#configuring-s3-upload">Configuring S3 upload</a>
+      in the full README — the IAM policy JSON and the exact steps to attach an instance role.</li>
+    <li><a href="./index.html">Back to argus-tty</a>.</li>
+  </ul>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/argus-tty">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

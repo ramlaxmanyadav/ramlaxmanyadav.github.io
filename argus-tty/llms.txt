@@ -1,0 +1,73 @@
+# argus-tty — Tiered, Recorded Linux Accounts for a Shared Ubuntu Host
+
+> argus-tty is a .deb-packaged CLI that provisions developer/admin/deployer Linux accounts on a
+> shared Ubuntu box, forces every one of their SSH sessions through a TTY recorder via sshd's own
+> `ForceCommand` (which a user's own `authorized_keys` cannot override), and ships the recordings
+> to S3 via an EC2 instance role — with an email ping on connect/disconnect. Admin sessions are
+> recorded exactly like developer sessions; more privilege never means less audit trail.
+
+Install via Launchpad PPA (`sudo add-apt-repository ppa:yadavramlaxman/argus-tty`) or a
+standalone `.deb` package; onboard accounts with `sudo argus-tty add`/`add-admin`/`add-deployer`.
+
+## Getting started
+
+- [README](https://github.com/ramlaxmanyadav/argus-tty/blob/main/README.md): the full
+  developer/admin/deployer tier model, 2FA, S3/email configuration, sudo whitelist customization,
+  and the complete configuration reference.
+- [llms-full.txt](https://ramlaxmanyadav.github.io/argus-tty/llms-full.txt): this file plus the
+  complete content of the README and PACKAGING.md, concatenated into one fetch.
+- [PACKAGING.md](https://github.com/ramlaxmanyadav/argus-tty/blob/main/PACKAGING.md): building and
+  publishing your own Launchpad PPA from source.
+
+## Documentation
+
+- [Configuration reference](https://github.com/ramlaxmanyadav/argus-tty/blob/main/README.md#configuration-reference):
+  every `config.env` variable — S3/email master switches, 2FA, tier renaming, agent/TCP/X11
+  forwarding, and more.
+- [Configuring S3 upload](https://github.com/ramlaxmanyadav/argus-tty/blob/main/README.md#configuring-s3-upload):
+  the IAM instance-role policy and setup steps, plus the shared-credentials fallback for
+  cross-account buckets.
+- [Customizing sudo permissions](https://github.com/ramlaxmanyadav/argus-tty/blob/main/README.md#customizing-sudo-permissions):
+  overriding the developer/admin whitelist per host without losing changes on upgrade.
+
+## Guides
+
+- [Why SSH session recording is split across three privilege-separated processes](https://ramlaxmanyadav.github.io/argus-tty/ssh-session-recording-architecture.html):
+  the wrapper/finalize/mailer split, why `ForceCommand` can't be bypassed from
+  `authorized_keys`, and why an IAM instance role — not per-account `aws configure` — is the only
+  mechanism that gives every current and future account working S3 upload.
+- [Installing argus-tty](https://ramlaxmanyadav.github.io/argus-tty/installing-argus-tty.html):
+  the Launchpad PPA (recommended) or the `.deb` package, onboarding your first accounts, and
+  verifying sshd/sudoers/systemd came up correctly.
+
+## Quick start
+
+```bash
+sudo add-apt-repository ppa:yadavramlaxman/argus-tty
+sudo apt update && sudo apt install argus-tty
+
+sudo argus-tty add dev1 --name "Alice Kumar" --pubkey dev1_id_ed25519.pub
+sudo argus-tty status   # confirm sshd/sudoers/systemd are all wired up
+```
+
+## What it does
+
+- Three Linux account tiers — `developer` (sudo whitelist), `admin` (full sudo), `deployer`
+  (start/stop/restart only) — each a real, individually attributable account, never shared.
+- Every session, regardless of tier, is forced through `argus-tty-wrapper` by an sshd `Match`
+  block's `ForceCommand`, which records the full TTY transcript and command history.
+- Session upload to S3 (`argus-tty-finalize`) and email notification (`argus-tty-mailer`) are
+  separate, differently-privileged processes from the recorder itself — only the mailer, root-only
+  and driven by a systemd timer, ever reads the SMTP password.
+- Both S3 upload and email default off; local recording to `/var/log/argus-tty/sessions/` always
+  happens regardless of either integration's state.
+- Optional Google Authenticator (TOTP) second factor for developer/admin sessions; deployer
+  accounts are always exempt.
+- Ships as a real `.deb` — installable, upgradable, and removable via `apt`, distributed through a
+  Launchpad PPA.
+
+## Links
+
+- [GitHub repo](https://github.com/ramlaxmanyadav/argus-tty)
+- [Used by Bosun](https://github.com/ramlaxmanyadav/bosun)
+- [This site's index](https://ramlaxmanyadav.github.io/argus-tty/)
