@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Background PDF Jobs with ActiveJob: Sidekiq, Solid Queue, and Storage Adapters — HtmlToPdf</title>
+<meta name="description" content="How HtmlToPdf.generate_later renders a Rails view to PDF in the background via plain ActiveJob — concrete Solid Queue and Sidekiq setup, the ActiveStorage and S3 storage adapters in detail, job status tracking across processes, retry semantics, and a troubleshooting section for the mistakes that actually happen in production.">
+<link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+<link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Background PDF Jobs with ActiveJob: Sidekiq, Solid Queue, and Storage Adapters">
+<meta property="og:description" content="How HtmlToPdf.generate_later renders to PDF in the background via plain ActiveJob — Solid Queue and Sidekiq setup, storage adapters, job status tracking, and retry semantics.">
+<meta property="og:url" content="https://ramlaxmanyadav.github.io/htmlToPdf/background-pdf-jobs-activejob-sidekiq-solid-queue.html">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Background PDF Jobs with ActiveJob: Sidekiq, Solid Queue, and Storage Adapters">
+<meta name="twitter:description" content="How HtmlToPdf.generate_later renders to PDF in the background via plain ActiveJob — Solid Queue and Sidekiq setup, storage adapters, job status tracking, and retry semantics.">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; color: #1e293b; background: #f8fafc; line-height: 1.6;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3730a3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { font-size: 1.7rem; margin: 0 0 0.5rem; }
+  .tagline { color: #475569; font-size: 1.05rem; margin: 0; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; }
+  p { margin: 0.75rem 0; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 1rem 1.25rem; border-radius: 10px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 0.75rem; }
+  th, td { border: 1px solid #e2e8f0; padding: 0.45rem 0.65rem; text-align: left; }
+  th { background: #fff; color: #475569; }
+  .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .links a { color: #3730a3; text-decoration: none; font-weight: 600; font-size: 0.92rem; }
+  .links a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; color: #94a3b8; font-size: 0.85rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  footer a { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="breadcrumb"><a href="./index.html">← HtmlToPdf</a></p>
+    <h1>Background PDF Jobs with ActiveJob: Sidekiq, Solid Queue, and Storage Adapters</h1>
+    <p class="tagline">HtmlToPdf 4.0 adds a second way to generate a PDF: in the background, via
+      plain ActiveJob, with job status tracking and S3/ActiveStorage storage — without touching how
+      the synchronous, in-request path already works.</p>
+  </header>
+
+  <h2>Why render in the background at all</h2>
+  <p>
+    The original design — <code>include HtmlToPdf</code> + <code>around_action :html_to_pdf</code>
+    — renders inline: the request that asks for the PDF holds a connection open while headless
+    Chrome converts the view, then gets the bytes back directly. That's the right model for a
+    one-page invoice a user clicks "download" for. It stops being the right model once the PDF is
+    slow enough that holding a request open for it is wasteful (a 40-page report, many images, a
+    long <code>javascript_delay</code> for async-rendered content), or once the PDF's destination
+    isn't "stream it to this one browser tab" but "attach it to a record" or "drop it in S3 for
+    something else to pick up later." <code>HtmlToPdf.generate_later</code> exists for exactly that
+    second case.
+  </p>
+
+  <pre><code>job = HtmlToPdf.generate_later(
+  controller: InvoicesController,
+  action: :show,
+  assigns: { invoice: invoice },
+  pdf_options: { title: "invoice", print_options: { format: "A4" } },
+  store: { adapter: :active_storage, record: invoice, attachment: :pdf },
+  metadata: { invoice_id: invoice.id }
+)
+
+HtmlToPdf::JobStatus.find(job.job_id)
+# => #&lt;HtmlToPdf::JobStatus state: "completed", result: {...}, metadata: {invoice_id: 1}&gt;</code></pre>
+
+  <h2>The architecture</h2>
+  <p>
+    Four pieces, each independently usable, with <code>generate_later</code> as the convenient
+    default that wires them together:
+  </p>
+  <ul>
+    <li><strong><code>HtmlToPdf::Renderer</code></strong> — renders a controller action to PDF bytes
+      <em>outside</em> of a request, via
+      <a href="https://api.rubyonrails.org/classes/ActionController/Renderer.html"><code>ActionController::Renderer</code></a>
+      — the same Rails API ActionMailer itself uses to render views with no real HTTP request in
+      flight. It calls the same <code>HtmlToPdf::PrintOptions</code> option resolution the
+      synchronous path uses, so <code>header_template</code>/<code>footer_template</code> filtering
+      (see <a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/security.md">Security</a>)
+      applies identically either way.</li>
+    <li><strong><code>HtmlToPdf::Converter</code></strong> — the actual "write HTML to a temp file,
+      point Chrome at it via <code>file://</code>, convert, clean up" logic. Shared, unchanged, by
+      both the synchronous path and <code>Renderer</code> — one implementation, not two.</li>
+    <li><strong><code>HtmlToPdf::JobStatus</code></strong> — tracks
+      <code>queued</code> → <code>processing</code> → <code>completed</code>/<code>failed</code> in
+      a pluggable store (default: <code>Rails.cache</code>), so a process other than the one running
+      the job — typically the web process a user is polling from — can read it.</li>
+    <li><strong><code>HtmlToPdf::Storage</code></strong> — dispatches to a registered adapter
+      (<code>:active_storage</code> and <code>:s3</code> ship with the gem) and returns a plain Hash
+      describing where the PDF ended up, which becomes <code>JobStatus#result</code>.</li>
+  </ul>
+  <p>
+    <strong><code>HtmlToPdf::GenerateJob</code> is a plain <code>ActiveJob::Base</code> subclass</strong>
+    built on exactly these pieces, using only <code>retry_on</code>/<code>discard_on</code>/
+    <code>queue_as</code> — ActiveJob's own public API. There is no Sidekiq- or Solid-Queue-specific
+    code anywhere in this gem. "Compatible with Sidekiq and Solid Queue" is true by construction,
+    not something verified by running two separate backends in CI — it runs under whichever adapter
+    <code>config.active_job.queue_adapter</code> names.
+  </p>
+
+  <h2>Setting up Solid Queue</h2>
+  <p>Rails 8's own default queue adapter. One config line:</p>
+  <pre><code>config.active_job.queue_adapter = :solid_queue</code></pre>
+  <p>Then run a worker as its own OS process, alongside your web server:</p>
+  <pre><code>bin/jobs</code></pre>
+  <p>
+    That last part matters more than it looks: <code>bin/jobs</code> is a <strong>separate Ruby
+    process</strong> from <code>rails server</code>, with its own memory. See "Job status tracking
+    across processes" below for the one config change that separation actually requires.
+  </p>
+
+  <h2>Setting up Sidekiq</h2>
+  <p>
+    Not a dependency of this gem — add it to your own Gemfile, the same "bring your own adapter"
+    stance the <code>:s3</code> storage adapter takes with <code>aws-sdk-s3</code>:
+  </p>
+  <pre><code>gem "sidekiq"</code></pre>
+  <pre><code># config/initializers/sidekiq.rb
+Sidekiq.configure_server { |c| c.redis = { url: ENV.fetch("REDIS_URL") } }
+Sidekiq.configure_client { |c| c.redis = { url: ENV.fetch("REDIS_URL") } }</code></pre>
+  <pre><code># config/environments/production.rb
+config.active_job.queue_adapter = :sidekiq</code></pre>
+  <pre><code>bundle exec sidekiq</code></pre>
+  <p>
+    Same separate-process caveat as Solid Queue applies — and if you're already running Redis for
+    Sidekiq itself, pointing <code>config.cache_store</code> at that same instance
+    (<code>:redis_cache_store</code>) is the path of least resistance for job status visibility.
+  </p>
+  <p class="tagline" style="font-size:0.92rem;">
+    Anything else ActiveJob supports — <code>good_job</code>, <code>que</code>,
+    <code>delayed_job</code> — works the same way: set <code>queue_adapter</code>, run that
+    backend's worker process, make sure the cache store is shared. Nothing else in this gem is
+    adapter-specific.
+  </p>
+
+  <h2>Job status tracking across processes</h2>
+  <p>
+    <code>HtmlToPdf::JobStatus</code> defaults to <code>HtmlToPdf::JobStatus::CacheStore</code> — a
+    thin wrapper over <code>Rails.cache</code>, namespaced under
+    <code>htmlToPdf:job_status:&lt;job_id&gt;</code>. This is the single most common setup mistake
+    with the whole feature, and it's not really an HtmlToPdf-specific gotcha — it's a
+    <code>Rails.cache</code> one that this feature happens to expose immediately: <strong>a Rails
+    app's default development cache store, <code>:memory_store</code>, lives in one process's
+    memory.</strong> A web process and a Solid Queue/Sidekiq worker process are two different
+    processes. The worker writes "completed" into its own in-memory cache; the web process, asked
+    to look up that same <code>job_id</code>, consults its <em>own</em> separate in-memory cache,
+    finds nothing, and reports a <code>nil</code> state forever — even though the job ran
+    successfully and the log clearly shows it.
+  </p>
+  <p>
+    The fix is the same one any multi-process Rails deployment already needs for
+    <code>Rails.cache</code> generally: a store that isn't tied to one process's memory. Solid Cache
+    (SQLite/MySQL/Postgres-backed, ships with Rails 8 alongside Solid Queue), Redis, or Memcached all
+    work — anything genuinely shared:
+  </p>
+  <pre><code># config/environments/development.rb / production.rb
+config.cache_store = :solid_cache_store   # or :redis_cache_store, :mem_cache_store</code></pre>
+  <p>
+    Swap the store itself, not just its backend, with any object responding to
+    <code>#read(job_id)</code> / <code>#write(job_id, attrs)</code>:
+  </p>
+  <pre><code>config.job_status_store = MyActiveRecordBackedStore.new</code></pre>
+
+  <h2>Storage adapters in detail</h2>
+
+  <h3><code>:active_storage</code></h3>
+  <p>
+    Attaches the rendered PDF to any ActiveRecord model with a
+    <code>has_one_attached</code>/<code>has_many_attached</code> association, through whichever
+    service <code>config/storage.yml</code> already points your app at — local disk in development,
+    S3/GCS/Azure in production, with no code difference between them. This is the right default if
+    your app already uses ActiveStorage for anything else: one blob/attachment model, one place
+    files get served from, variants and previews if you need them later.
+  </p>
+  <pre><code>HtmlToPdf.generate_later(
+  controller: InvoicesController, action: :show, assigns: { invoice: invoice },
+  store: { adapter: :active_storage, record: invoice, attachment: :pdf, filename: "invoice.pdf" }
+)
+# JobStatus#result => { adapter: :active_storage, blob_id:, key:, filename:, byte_size: }</code></pre>
+
+  <h3><code>:s3</code></h3>
+  <p>
+    Direct upload via <code>aws-sdk-s3</code>, for an app that doesn't use ActiveStorage at all and
+    just wants a plain bucket/key/URL back — no blob/attachment table, no ActiveRecord association
+    required on the model whose PDF this is. <strong>This gem does not depend on
+    <code>aws-sdk-s3</code></strong>; it's a true optional dependency, lazily required only when
+    this adapter is actually used, so apps that only use <code>:active_storage</code> never need it
+    in their bundle.
+  </p>
+  <pre><code>HtmlToPdf.generate_later(
+  controller: InvoicesController, action: :show, assigns: { invoice: invoice },
+  store: { adapter: :s3, key: "invoices/\#{invoice.id}.pdf" }  # bucket: or config.s3_bucket
+)
+# JobStatus#result => { adapter: :s3, bucket:, key:, url: }</code></pre>
+  <p>
+    Prefer leaving credentials out of <code>config.s3_client_options</code> entirely and letting the
+    AWS SDK's default credential chain — an EC2/ECS instance or task role — resolve them. A static
+    access key is a credential that outlives any single process, has to be rotated manually, and
+    works identically whether the code that holds it is trustworthy or not; an instance role is
+    scoped to the machine and never written to disk. Only fall back to explicit credentials when an
+    instance role genuinely isn't an option, such as a bucket in a different AWS account.
+  </p>
+
+  <h3>Picking one</h3>
+  <table>
+    <tr><th></th><th><code>:active_storage</code></th><th><code>:s3</code></th></tr>
+    <tr><td>Extra dependency</td><td>none (already in Rails)</td><td><code>aws-sdk-s3</code>, added yourself</td></tr>
+    <tr><td>Needs an AR association on the model</td><td>yes</td><td>no</td></tr>
+    <tr><td>Backing service</td><td>whatever <code>storage.yml</code> says</td><td>always S3, directly</td></tr>
+    <tr><td>Result shape</td><td>blob id/key/filename/byte_size</td><td>bucket/key/URL</td></tr>
+    <tr><td>Best fit</td><td>app already uses ActiveStorage</td><td>no ActiveStorage, or a non-AR-backed workflow</td></tr>
+  </table>
+
+  <h2>Retries, failures, and why attempts aren't a config option</h2>
+  <p>
+    <code>GenerateJob</code> retries the same transient Chrome errors <code>BrowserPool</code> itself
+    already retries once internally (<code>Ferrum::DeadBrowserError</code>,
+    <code>ProcessTimeoutError</code>, <code>TimeoutError</code>, <code>NoSuchPageError</code>) — up
+    to 3 job-level attempts on top of that, with <code>wait: :polynomially_longer</code>. A bad
+    <code>print_options</code> value raises <code>ArgumentError</code>, which is discarded
+    immediately rather than retried, since retrying a validation failure can't change its outcome.
+  </p>
+  <p>
+    Those numbers are fixed literals in the gem's source, not a <code>HtmlToPdf.configure</code>
+    option — on purpose, and the reason is a load-order subtlety worth understanding rather than
+    hitting by surprise. <code>retry_on</code> is a class-level macro: it runs once, the moment
+    <code>generate_job.rb</code> is <code>require</code>d, which happens during
+    <code>Bundler.require</code> — <em>before</em> your own
+    <code>config/initializers/html_to_pdf.rb</code> has had any chance to run. A config value read
+    at that exact moment would always see this gem's own default, never whatever your initializer
+    later sets it to, which would be a confusing, silent footgun: the setting would appear to have
+    no effect, and nothing would say why. Rather than ship something that looks configurable but
+    isn't reliably, retry/discard semantics are fixed, and anyone who wants different ones defines
+    their own small <code>ActiveJob::Base</code> subclass on the same <code>Renderer</code>/
+    <code>Storage</code> primitives <code>GenerateJob</code> itself is built from:
+  </p>
+  <pre><code>class MyPdfJob < ActiveJob::Base
+  retry_on Ferrum::DeadBrowserError, wait: 10.seconds, attempts: 10
+
+  def perform(...)
+    pdf_bytes = HtmlToPdf::Renderer.render(...)
+    HtmlToPdf::Storage.store(pdf_bytes, adapter: :s3, key: ...)
+  end
+end</code></pre>
+  <p>
+    <code>config.job_queue_name</code> doesn't have this problem and <em>is</em> safely dynamic:
+    <code>queue_as { HtmlToPdf.configuration.job_queue_name }</code> uses ActiveJob's block form,
+    which Rails evaluates per-enqueue rather than once at class-definition time.
+  </p>
+  <p>
+    <code>config.on_job_success</code> / <code>config.on_job_failure</code> are plain Procs called
+    with the <code>JobStatus</code> (and the exception, for the failure callback) once a job finishes
+    for good — after retries are exhausted, or a discard. They run in-process, so they're never
+    serialized anywhere, which is also why they can't be passed per-call as job arguments the way
+    <code>store:</code> or <code>metadata:</code> are; a Proc isn't something ActiveJob can
+    serialize into a queue backend.
+  </p>
+
+  <h2>Concurrency</h2>
+  <p>
+    <code>BrowserPool</code> is one headless Chrome process per Ruby process, not per request (see
+    <a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/architecture.md#browserpool">Architecture</a>).
+    A web app under ordinary load rarely stresses that; a worker pool with several threads all
+    calling <code>generate_later</code>-enqueued jobs at once is exactly the case that can.
+    <code>config.max_concurrent_renders</code> (default <code>nil</code>, unbounded — unchanged from
+    before this feature existed) caps how many conversions run against the shared browser
+    concurrently, via a <code>Concurrent::Semaphore</code>. It applies to the synchronous controller
+    path too, for the same reason: both paths share the identical one browser process.
+  </p>
+
+  <h2>Troubleshooting</h2>
+  <ul>
+    <li><strong>A job sits in <code>"queued"</code> forever.</strong> No worker process is actually
+      running, or <code>config.job_queue_name</code> doesn't match the queue(s) the worker is
+      listening to. Confirm <code>bin/jobs</code>/<code>bundle exec sidekiq</code> is running as its
+      own process, separate from the web server.</li>
+    <li><strong><code>JobStatus.find</code> returns a <code>nil</code> state even though the worker's
+      log clearly shows the job ran.</strong> See "Job status tracking across processes" above —
+      this is almost always <code>:memory_store</code>/<code>:file_store</code> in the process doing
+      the reading.</li>
+    <li><strong><code>ActiveStorageAdapter</code> raises <code>LoadError: ActiveStorage isn't
+      loaded</code>.</strong> The app was generated with <code>--skip-active-storage</code>. Either
+      undo that, or use <code>:s3</code> instead.</li>
+    <li><strong><code>S3Adapter</code> raises <code>ArgumentError: ... needs a bucket</code>.</strong>
+      Pass <code>bucket:</code> on the call or set <code>config.s3_bucket</code> — there's no
+      implicit default bucket.</li>
+    <li><strong>A job fails with <code>ActiveJob::DeserializationError</code> naming a record.</strong>
+      Something passed via <code>assigns:</code>/<code>store:</code> (serialized by GlobalID) was
+      deleted before the job ran — the same failure mode any ActiveJob job has with a vanished
+      record, not specific to this gem.</li>
+  </ul>
+
+  <h2>Further reading</h2>
+  <ul>
+    <li><a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/background-jobs.md">docs/background-jobs.md</a>
+      in the repo — the same material, kept in sync as the source of truth.</li>
+    <li><a href="./rails-double-render-pdf.html">The DoubleRenderError trap</a> — the Rails internals
+      reason the synchronous path has to be an <code>around_action</code>.</li>
+    <li><a href="./index.html">Back to HtmlToPdf</a>.</li>
+  </ul>
+
+  <footer>
+    MIT licensed. Source on <a href="https://github.com/ramlaxmanyadav/htmlToPdf">GitHub</a>.
+  </footer>
+
+</div>
+</body>
+</html>

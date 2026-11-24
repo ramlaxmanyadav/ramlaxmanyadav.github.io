@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>HtmlToPdf — Rails Controller Actions to PDF via Headless Chrome</title>
-<meta name="description" content="HtmlToPdf renders any Rails controller action to a downloadable PDF exactly as the browser would — real CSS, real layout, real fonts — via a pooled headless Chrome instance instead of an abandoned wkhtmltopdf binary.">
+<meta name="description" content="HtmlToPdf renders any Rails controller action to a downloadable PDF exactly as the browser would — real CSS, real layout, real fonts — via a pooled headless Chrome instance instead of an abandoned wkhtmltopdf binary. Generate it inline, or in the background via ActiveJob (Sidekiq, Solid Queue, any adapter) with job status tracking and S3/ActiveStorage storage.">
 <link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
 <link rel="alternate" type="text/plain" href="./llms-full.txt" title="llms-full.txt">
 <meta property="og:type" content="website">
 <meta property="og:title" content="HtmlToPdf — Rails Controller Actions to PDF via Headless Chrome">
-<meta property="og:description" content="Render any Rails view to PDF exactly as the browser would, via a pooled headless Chrome instance instead of an abandoned wkhtmltopdf binary.">
+<meta property="og:description" content="Render any Rails view to PDF exactly as the browser would — inline, or in the background via ActiveJob with job status tracking and S3/ActiveStorage storage.">
 <meta property="og:url" content="https://ramlaxmanyadav.github.io/htmlToPdf/">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="HtmlToPdf — Rails Controller Actions to PDF via Headless Chrome">
-<meta name="twitter:description" content="Render any Rails view to PDF exactly as the browser would, via a pooled headless Chrome instance instead of an abandoned wkhtmltopdf binary.">
+<meta name="twitter:description" content="Render any Rails view to PDF exactly as the browser would — inline, or in the background via ActiveJob with job status tracking and S3/ActiveStorage storage.">
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -60,11 +60,14 @@
   <header>
     <h1>Render any Rails view to PDF, exactly as the browser sees it.</h1>
     <p class="tagline">A pooled headless Chrome instance instead of an abandoned wkhtmltopdf
-      binary — real CSS, real layout, real fonts, no separate renderer to compile or package.</p>
+      binary — real CSS, real layout, real fonts, no separate renderer to compile or package.
+      Generate it inline, or hand it to a background job with job status tracking and
+      S3/ActiveStorage storage.</p>
     <div class="badges">
       <a href="https://rubygems.org/gems/htmlToPdf"><span class="badge">gem install htmlToPdf</span></a>
       <a href="https://github.com/ramlaxmanyadav/htmlToPdf"><span class="badge">MIT licensed</span></a>
       <a href="https://github.com/ramlaxmanyadav/htmlToPdf"><span class="badge">GitHub</span></a>
+      <a href="./background-pdf-jobs-activejob-sidekiq-solid-queue.html"><span class="badge">New in 4.0: background jobs</span></a>
     </div>
   </header>
 
@@ -103,6 +106,41 @@ end</code></pre>
       request-controllable by default.</li>
   </ul>
 
+  <h2>Background rendering (new in 4.0)</h2>
+  <p>
+    For PDFs slow enough that a caller shouldn't hold a connection open, or that should land in
+    storage instead of streaming back directly:
+  </p>
+  <pre><code>HtmlToPdf.generate_later(
+  controller: InvoicesController,
+  action: :show,
+  assigns: { invoice: invoice },
+  store: { adapter: :active_storage, record: invoice, attachment: :pdf }
+)
+
+HtmlToPdf::JobStatus.find(job.job_id) # => state/result/error, readable from any process</code></pre>
+  <ul>
+    <li><strong><code>HtmlToPdf::GenerateJob</code></strong> is a plain <code>ActiveJob::Base</code>
+      subclass — no Sidekiq- or Solid-Queue-specific code anywhere, so it runs under whichever
+      queue adapter your app already configures.</li>
+    <li><strong>Automatic retries</strong> on the same transient Chrome errors the pooled browser
+      already retries once internally; a bad <code>print_options</code> value is discarded
+      immediately instead, since retrying a validation error can't fix it.</li>
+    <li><strong>Job status tracking</strong> (<code>queued</code> → <code>processing</code> →
+      <code>completed</code>/<code>failed</code>) via a pluggable store, readable from a different
+      process than the one running the job — the normal case with a real worker process.</li>
+    <li><strong>Pluggable storage</strong> — ships <code>:active_storage</code> (any
+      <code>has_one_attached</code>, whatever service your app already uses) and a true-optional
+      <code>:s3</code> adapter (direct upload, no ActiveStorage dependency forced on you).</li>
+    <li><strong><code>config.max_concurrent_renders</code></strong> caps how many conversions run
+      against the shared browser at once — useful once a worker pool, not just a web request, can
+      call into it concurrently.</li>
+  </ul>
+  <p>
+    Full write-up, with per-adapter setup for Solid Queue and Sidekiq, in
+    <a href="./background-pdf-jobs-activejob-sidekiq-solid-queue.html">Background PDF jobs with ActiveJob: Sidekiq, Solid Queue, and storage adapters</a>.
+  </p>
+
   <h2>How it compares</h2>
   <table>
     <tr><th>Capability</th><th>HtmlToPdf</th><th>WickedPdf / PDFKit</th><th>Grover</th><th>Prawn</th></tr>
@@ -120,6 +158,11 @@ end</code></pre>
 
   <h2>Guides</h2>
   <ul>
+    <li><a href="./background-pdf-jobs-activejob-sidekiq-solid-queue.html">Background PDF jobs with
+      ActiveJob: Sidekiq, Solid Queue, and storage adapters</a> — the full architecture
+      (<code>Renderer</code>/<code>Converter</code>/<code>JobStatus</code>/<code>Storage</code>),
+      concrete Solid Queue and Sidekiq setup, both storage adapters in detail, and a
+      troubleshooting section for the mistakes that actually happen in production.</li>
     <li><a href="./headless-chrome-vs-wkhtmltopdf.html">Headless Chrome vs. wkhtmltopdf for Rails
       PDF generation</a> — why an unmaintained WebKit snapshot is the wrong foundation in 2026, and
       what actually changes when you switch.</li>
@@ -136,6 +179,7 @@ end</code></pre>
     <a href="https://github.com/ramlaxmanyadav/htmlToPdf">GitHub repo</a>
     <a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/README.md">Full README</a>
     <a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/architecture.md">Architecture docs</a>
+    <a href="https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/background-jobs.md">Background jobs docs</a>
     <a href="https://rubygems.org/gems/htmlToPdf">RubyGems</a>
     <a href="./llms.txt">llms.txt</a>
     <a href="./llms-full.txt">llms-full.txt</a>

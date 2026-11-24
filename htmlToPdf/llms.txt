@@ -4,7 +4,9 @@
 > — real CSS, real layout, real fonts — via a pooled headless Chrome instance (driven over the
 > Chrome DevTools Protocol through the `ferrum` gem) instead of an abandoned wkhtmltopdf binary.
 > Wire-up is `include HtmlToPdf` + `around_action :html_to_pdf` on a controller; it only takes over
-> when the request's format is `pdf`, leaving every other request untouched.
+> when the request's format is `pdf`, leaving every other request untouched. As of 4.0, it can also
+> render in the background via `HtmlToPdf.generate_later` — plain ActiveJob (Sidekiq, Solid Queue,
+> or any adapter), with job status tracking and S3/ActiveStorage storage.
 
 It's a real `around_action`, not a `before_action` that re-renders the action on a throwaway
 controller instance — every other callback, instance variable, and `rescue_from` behaves exactly
@@ -35,9 +37,17 @@ distinction matters.
 - [Security](https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/security.md): exactly
   what's safe to expose on a public action — the validated print-options surface, why
   `header_template`/`footer_template` are opt-in only, and the `javascript_delay` cap.
+- [Background PDF generation](https://github.com/ramlaxmanyadav/htmlToPdf/blob/master/docs/background-jobs.md):
+  `HtmlToPdf.generate_later`, `HtmlToPdf::Renderer`/`Converter`/`JobStatus`/`Storage`, Solid Queue
+  and Sidekiq setup, the `:active_storage`/`:s3` storage adapters, retry semantics, and
+  troubleshooting.
 
 ## Guides
 
+- [Background PDF jobs with ActiveJob: Sidekiq, Solid Queue, and storage adapters](https://ramlaxmanyadav.github.io/htmlToPdf/background-pdf-jobs-activejob-sidekiq-solid-queue.html):
+  the full architecture, concrete per-adapter setup, both storage adapters compared in detail, the
+  cross-process job-status caching gotcha, and why retry attempts are fixed rather than
+  configurable.
 - [Headless Chrome vs. wkhtmltopdf for Rails PDF generation](https://ramlaxmanyadav.github.io/htmlToPdf/headless-chrome-vs-wkhtmltopdf.html):
   why an unmaintained, years-frozen WebKit build is the wrong foundation in 2026, and what actually
   changes — and what it costs — when you switch to a real, currently-maintained browser engine.
@@ -82,8 +92,16 @@ end
 - A narrow, validated `print_options` surface — every option is a checked number/enum/boolean
   except `header_template`/`footer_template` (raw HTML), which are filtered out of
   request-supplied options unless `config.allow_request_templates` is explicitly enabled.
+- **(4.0+) `HtmlToPdf.generate_later`** — renders in the background via a plain `ActiveJob::Base`
+  job (`HtmlToPdf::GenerateJob`, no Sidekiq/Solid-Queue-specific code — runs under whichever
+  adapter the host app configures), with automatic retries on transient Chrome errors, job status
+  tracking (`HtmlToPdf::JobStatus`, readable from a different process than the one running the
+  job), pluggable storage (`HtmlToPdf::Storage` — ships `:active_storage` and a true-optional
+  `:s3` adapter), and `config.max_concurrent_renders` to cap concurrent conversions against the
+  shared browser.
 - Runtime dependency: `ferrum` only (plus `activesupport`, already present in any Rails app) — no
-  Node.js, no Puppeteer.
+  Node.js, no Puppeteer. `aws-sdk-s3` is a true optional dependency, needed only for the `:s3`
+  storage adapter.
 
 ## Links
 
